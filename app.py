@@ -1,42 +1,120 @@
-# app.py
+"""
+Main Streamlit application for Yulia Assistant
+"""
+
 import streamlit as st
 import asyncio
-from pipeline import run_turn
 
-DB_PATH = "yuh_products.db"
 
-st.title("Yulia prototype")
+#Import all modules (in actual implementation, these would be separate files)
+from config import SUGGESTED_PROMPTS
+from models import ConversationState
+from database import init_database
+from conversation import process_user_message
+from ui_components import (
+    init_session_state,
+    display_suggested_prompts,
+    display_product_table,
+    display_debug_info
+)
 
-if "state" not in st.session_state:
-    st.session_state.state = {"mode": "AWAITING_GOAL"}
+def main():
+    """Main Streamlit application entry point"""
 
-# Suggested prompts
-st.subheader("Suggestions")
-suggestions = [
-    "I'm a beginner. How do I start investing?",
-    "I want something safe and low risk.",
-    "I’m curious about crypto but don’t know where to start.",
-    "Are there themed investments like AI or clean energy?",
-]
-cols = st.columns(2)
-for i, s in enumerate(suggestions):
-    if cols[i % 2].button(s):
-        st.session_state.state["last_user_message"] = s
-        st.session_state.last_result = asyncio.run(run_turn(st.session_state.state, DB_PATH))
+    # Page configuration
+    st.set_page_config(
+        page_title="Yulia Assistant",
+        page_icon="💎",
+        layout="wide"
+    )
 
-st.subheader("Your goal")
-user_text = st.text_input("goal_text", "")
+    # Initialize database (one-time setup)
+    init_database()
 
-if st.button("Submit") and user_text.strip():
-    st.session_state.state["last_user_message"] = user_text.strip()
-    st.session_state.last_result = asyncio.run(run_turn(st.session_state.state, DB_PATH))
+    # Initialize session state
+    init_session_state()
 
-res = st.session_state.get("last_result")
-if res:
-    if res["response_type"] == "clarify":
-        st.info(res["assistant_text"])
-        for q in res.get("questions", []):
-            st.write("- " + q)
-    else:
-        st.markdown(res["assistant_text"])
-        st.caption(f"intent={res.get('intent')} conf={res.get('confidence')}, attempts={res.get('attempts')}, blocked={res.get('blocked')}")
+    # Header
+    st.title("💎 Yulia Assistant")
+    st.caption("Your guide to exploring investing concepts and yuh products")
+
+    # Display suggested prompts for new conversations
+    if len(st.session_state.messages) == 0:
+        display_suggested_prompts(SUGGESTED_PROMPTS)
+
+    # Display chat history
+    for msg in st.session_state.messages:
+        with st.chat_message(msg["role"]):
+            st.write(msg["content"])
+            if "products" in msg:
+                display_product_table(msg["products"])
+            if "debug" in msg:
+                display_debug_info(msg["debug"])
+
+    # Chat input
+    user_input = st.chat_input("Ask me about investing or yuh products...")
+
+    # Handle suggested prompt clicks
+    if 'user_input' in st.session_state:
+        user_input = st.session_state.user_input
+        del st.session_state.user_input
+
+    # Process user input
+    if user_input:
+        # Display user message
+        st.session_state.messages.append({"role": "user", "content": user_input})
+        with st.chat_message("user"):
+            st.write(user_input)
+
+        # Process message and generate response
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                # Run async conversation processing
+                result = asyncio.run(
+                    process_user_message(user_input, st.session_state.conversation_state)
+                )
+
+                # Display assistant message
+                st.write(result.message)
+
+                # Display products if available
+                if result.products:
+                    display_product_table(result.products)
+
+                # Display debug information
+                display_debug_info({
+                    "intent": result.intent,
+                    "confidence": result.confidence,
+                    "retries": result.retries,
+                    "type": result.type
+                })
+
+                # Store assistant message in history
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "content": result.message,
+                    "products": result.products or [],
+                    "debug": {
+                        "intent": result.intent,
+                        "confidence": result.confidence,
+                        "retries": result.retries,
+                        "type": result.type
+                    }
+                })
+
+                # Update state flags
+                st.session_state.awaiting_followup = (result.type == "followup")
+
+                # Reset conversation state if mismatch or failure
+                if result.type in ["mismatch", "guardrail_failure"]:
+                    st.session_state.conversation_state = ConversationState(
+                        original_goal="",
+                        followup_count=0,
+                        followup_answers=[],
+                        last_intent=None,
+                        last_confidence=None
+                    )
+
+
+if __name__ == "__main__":
+    main()
