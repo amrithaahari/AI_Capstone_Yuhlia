@@ -1,120 +1,83 @@
-"""
-Main Streamlit application for Yulia Assistant
-"""
-
 import streamlit as st
-import asyncio
 
-
-#Import all modules (in actual implementation, these would be separate files)
-from config import SUGGESTED_PROMPTS
-from models import ConversationState
 from database import init_database
-from conversation import process_user_message
+from conversation import process_user_message, reset_state
 from ui_components import (
     init_session_state,
     display_suggested_prompts,
     display_product_table,
-    display_debug_info
+    display_debug_info,
 )
 
-def main():
-    """Main Streamlit application entry point"""
-
-    # Page configuration
-    st.set_page_config(
-        page_title="Yulia Assistant",
-        page_icon="💎",
-        layout="wide"
-    )
-
-    # Initialize database (one-time setup)
+@st.cache_resource
+def db_ready() -> bool:
     init_database()
+    return True
 
-    # Initialize session state
+def main():
+    st.set_page_config(page_title="Yulia Assistant", page_icon="💎", layout="wide")
+
+    db_ready()
     init_session_state()
 
-    # Header
     st.title("💎 Yulia Assistant")
-    st.caption("Your guide to exploring investing concepts and yuh products")
+    st.caption("Educational investing discovery. No advice. Products shown are examples available in yuh.")
 
-    # Display suggested prompts for new conversations
+    st.session_state.show_debug = st.toggle("Show debug", value=st.session_state.show_debug)
+
     if len(st.session_state.messages) == 0:
-        display_suggested_prompts(SUGGESTED_PROMPTS)
+        display_suggested_prompts()
 
-    # Display chat history
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.write(msg["content"])
-            if "products" in msg:
+            if msg.get("products"):
                 display_product_table(msg["products"])
-            if "debug" in msg:
+            if st.session_state.show_debug and msg.get("debug"):
                 display_debug_info(msg["debug"])
 
-    # Chat input
     user_input = st.chat_input("Ask me about investing or yuh products...")
 
-    # Handle suggested prompt clicks
-    if 'user_input' in st.session_state:
+    if "user_input" in st.session_state:
         user_input = st.session_state.user_input
         del st.session_state.user_input
 
-    # Process user input
     if user_input:
-        # Display user message
         st.session_state.messages.append({"role": "user", "content": user_input})
         with st.chat_message("user"):
             st.write(user_input)
 
-        # Process message and generate response
         with st.chat_message("assistant"):
-            with st.spinner("Thinking..."):
-                # Run async conversation processing
-                result = asyncio.run(
-                    process_user_message(user_input, st.session_state.conversation_state)
-                )
-
-                # Display assistant message
-                st.write(result.message)
-
-                # Display products if available
-                if result.products:
-                    display_product_table(result.products)
-
-                # Display debug information
-                display_debug_info({
-                    "intent": result.intent,
-                    "confidence": result.confidence,
-                    "retries": result.retries,
-                    "type": result.type
-                })
-
-                # Store assistant message in history
-                st.session_state.messages.append({
-                    "role": "assistant",
-                    "content": result.message,
-                    "products": result.products or [],
-                    "debug": {
+            result = process_user_message(user_input, st.session_state.conversation_state)
+            st.write(result.message)
+            if result.products:
+                display_product_table(result.products)
+            if st.session_state.show_debug:
+                display_debug_info(
+                    {
                         "intent": result.intent,
                         "confidence": result.confidence,
                         "retries": result.retries,
-                        "type": result.type
+                        "type": result.type,
                     }
-                })
+                )
 
-                # Update state flags
-                st.session_state.awaiting_followup = (result.type == "followup")
+        st.session_state.messages.append(
+            {
+                "role": "assistant",
+                "content": result.message,
+                "products": result.products or [],
+                "debug": {
+                    "intent": result.intent,
+                    "confidence": result.confidence,
+                    "retries": result.retries,
+                    "type": result.type,
+                },
+            }
+        )
 
-                # Reset conversation state if mismatch or failure
-                if result.type in ["mismatch", "guardrail_failure"]:
-                    st.session_state.conversation_state = ConversationState(
-                        original_goal="",
-                        followup_count=0,
-                        followup_answers=[],
-                        last_intent=None,
-                        last_confidence=None
-                    )
-
+        if result.type in {"mismatch", "guardrail_failure"}:
+            reset_state(st.session_state.conversation_state)
 
 if __name__ == "__main__":
     main()

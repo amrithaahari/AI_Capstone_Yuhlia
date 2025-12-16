@@ -1,48 +1,44 @@
 """
 Data models and schemas for Yulia Assistant
 """
-
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional
 
 @dataclass
 class ClassificationResult:
-    """Result from intent classification"""
     category: str
     confidence: float
     reasoning: str
 
 @dataclass
 class Product:
-    """Product from database"""
-    product_id: int
+    id: int
     name: str
     description: str
     sector: Optional[str]
     currency: Optional[str]
     region: Optional[str]
-    esg_score: Optional[str]
+    esg: Optional[str]
     ter: Optional[float]
 
 @dataclass
 class GuardrailResult:
-    """Result from guardrail check"""
     passed: bool
-    reason: Optional[str]
+    reason: Optional[str] = None
 
 @dataclass
 class ConversationState:
-    """Tracks the current conversation state"""
-    original_goal: str
-    followup_count: int
-    followup_answers: List[str]
-    last_intent: Optional[str]
-    last_confidence: Optional[float]
+    goal: str = ""
+    awaiting_followup: bool = False
+    followup_count: int = 0
+    followup_answers: List[str] = field(default_factory=list)
+    last_followup_key: Optional[str] = None
+    last_intent: Optional[str] = None
+    last_confidence: Optional[float] = None
 
 @dataclass
 class ProcessingResult:
-    """Result from processing a user message"""
-    type: str  # 'followup', 'success', 'mismatch', 'guardrail_failure'
+    type: str  # followup, success, mismatch, guardrail_failure
     message: str
     products: Optional[List[Product]] = None
     intent: Optional[str] = None

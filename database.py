@@ -1,129 +1,100 @@
-"""
-Database operations for Yulia Assistant
-Connects to existing yuh_products.db with real product data
-"""
-
 import sqlite3
-from typing import List
+from typing import List, Optional, Tuple
+
 from config import DATABASE_NAME, TOP_K_PRODUCTS
 from models import Product
 
-def init_database():
-    """
-    Initialize connection to existing SQLite database.
-    Note: This assumes yuh_products.db already exists with the products table.
-
-    Table structure:
-    - product_ID (INTEGER PRIMARY KEY)
-    - Name (TEXT)
-    - Symbol (TEXT)
-    - ISIN (TEXT)
-    - Currency (TEXT)
-    - stock_exchange (TEXT)
-    - Description (TEXT)
-    - Type (TEXT)
-    - Sector (TEXT)
-    - Region (TEXT)
-    - ESG-rating_raw (INTEGER)
-    - TER (REAL)
-    - ESG_score (TEXT)
-    """
-    try:
-        conn = sqlite3.connect(DATABASE_NAME, check_same_thread=False)
-        cursor = conn.cursor()
-
-        # Verify table exists
-        cursor.execute("""
-            SELECT name FROM sqlite_master 
-            WHERE type='table' AND name='products'
-        """)
-
-        if cursor.fetchone() is None:
-            raise Exception("products table not found in database")
-
-        # Verify we have data
-        cursor.execute('SELECT COUNT(*) FROM products')
-        count = cursor.fetchone()[0]
-        print(f"Database initialized. Found {count} products.")
-
-        conn.close()
-
-    except Exception as e:
-        print(f"Database initialization error: {e}")
-        raise
-
-def search_products(query_terms: List[str], top_k: int = TOP_K_PRODUCTS) -> List[Product]:
-    """
-    Search products using SQL LIKE matching across multiple columns.
-
-    Searches across: Name, Description, Sector, Currency, Region, Type, ESG_score
-    """
+def init_database() -> None:
     conn = sqlite3.connect(DATABASE_NAME, check_same_thread=False)
-    cursor = conn.cursor()
+    cur = conn.cursor()
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='products'")
+    if cur.fetchone() is None:
+        conn.close()
+        raise RuntimeError("products table not found in database")
+    conn.close()
 
-    # Build query with OR conditions for multiple columns
-    # Note: Using actual column names from the existing table
-    search_columns = ['Name', 'Description', 'Sector', 'Currency', 'Region', 'Type', 'ESG_score']
+def _score_row(row: Tuple, terms: List[str]) -> int:
+    # Row is: (product_ID, Name, Description, Sector, Currency, Region, ESG_score, TER, Type)
+    _, name, desc, sector, currency, region, esg, _, ptype = row
+    blob = {
+        "name": (name or "").lower(),
+        "type": (ptype or "").lower(),
+        "sector": (sector or "").lower(),
+        "desc": (desc or "").lower(),
+        "region": (region or "").lower(),
+        "currency": (currency or "").lower(),
+        "esg": (esg or "").lower(),
+    }
+
+    score = 0
+    for t in terms:
+        tl = t.lower().strip()
+        if not tl:
+            continue
+        if tl in blob["name"]:
+            score += 6
+        if tl in blob["type"]:
+            score += 5
+        if tl in blob["sector"]:
+            score += 3
+        if tl in blob["region"]:
+            score += 2
+        if tl in blob["currency"]:
+            score += 2
+        if tl in blob["esg"]:
+            score += 2
+        if tl in blob["desc"]:
+            score += 1
+    return score
+
+def search_products(
+    query_terms: List[str],
+    top_k: int = TOP_K_PRODUCTS,
+    type_whitelist: Optional[List[str]] = None,
+) -> List[Product]:
+    conn = sqlite3.connect(DATABASE_NAME, check_same_thread=False)
+    cur = conn.cursor()
+
+    search_columns = ["Name", "Description", "Sector", "Currency", "Region", "Type", "ESG_score"]
     conditions = []
-    params = []
+    params: List[str] = []
 
     for term in query_terms:
         term_conditions = [f"{col} LIKE ?" for col in search_columns]
         conditions.append(f"({' OR '.join(term_conditions)})")
         params.extend([f"%{term}%" for _ in search_columns])
 
-    # Query using actual column names from your table
-    query = f'''
-        SELECT product_ID, Name, Description, Sector, Currency, Region, ESG_score, TER
-        FROM products
-        WHERE {' OR '.join(conditions)}
-        LIMIT ?
-    '''
-    params.append(top_k)
+    where_clause = " OR ".join(conditions) if conditions else "1=1"
+    type_clause = ""
+    if type_whitelist:
+        placeholders = ",".join(["?"] * len(type_whitelist))
+        type_clause = f" AND Type IN ({placeholders})"
+        params.extend(type_whitelist)
 
-    cursor.execute(query, params)
-    results = cursor.fetchall()
+    sql = f"""
+        SELECT product_ID, Name, Description, Sector, Currency, Region, ESG_score, TER, Type
+        FROM products
+        WHERE ({where_clause}) {type_clause}
+        LIMIT 200
+    """
+
+    cur.execute(sql, params)
+    rows = cur.fetchall()
     conn.close()
 
-    products = []
-    for row in results:
+    # Rank rows crudely to avoid random LIKE ordering
+    ranked = sorted(rows, key=lambda r: _score_row(r, query_terms), reverse=True)[:top_k]
+
+    products: List[Product] = []
+    for r in ranked:
         products.append(Product(
-            product_id=row[0],
-            name=row[1],
-            description=row[2],
-            sector=row[3],
-            currency=row[4],
-            region=row[5],
-            esg_score=row[6],
-            ter=row[7]
+            id=r[0],
+            name=r[1],
+            description=r[2],
+            sector=r[3],
+            currency=r[4],
+            region=r[5],
+            esg=r[6],
+            ter=r[7],
         ))
-
-    return products
-
-def get_all_products() -> List[Product]:
-    """Retrieve all products from the database"""
-    conn = sqlite3.connect(DATABASE_NAME, check_same_thread=False)
-    cursor = conn.cursor()
-
-    cursor.execute('''
-        SELECT product_ID, Name, Description, Sector, Currency, Region, ESG_score, TER
-        FROM products
-    ''')
-
-    results = cursor.fetchall()
-    conn.close()
-
-    products = []
-    for row in results:
-        products.append(Product(
-            product_id=row[0],
-            name=row[1],
-            description=row[2],
-            sector=row[3],
-            currency=row[4],
-            region=row[5],
-            esg_score=row[6],
-            ter=row[7]
-        ))
-
     return products
