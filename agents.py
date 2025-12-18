@@ -1,6 +1,7 @@
 import json
 import os
 from typing import List, Optional
+import re
 
 from config import Intent
 from models import ClassificationResult, GuardrailResult, Product
@@ -69,9 +70,12 @@ Hard rules:
 - No performance predictions or guarantees
 - Do not ask for amounts, balances, or when exactly to invest
 - Only mention products provided
+
 Style:
 - Educational, neutral, short paragraphs, bullets allowed
-- Treat products as examples to explore, not picks"""
+- Treat products as examples to explore, not picks
+- Avoid recommendation adjectives: ideal, best, great choice, should, recommend
+- Do not imply risk-free. Use ‘can be less volatile’ only when appropriate"""
 
     prompt = f"""{context}
 
@@ -86,19 +90,57 @@ Write a response that:
 
     return fetch_openai_response(prompt, system_prompt).strip()
 
+
+
+
 def check_guardrails(text: str) -> GuardrailResult:
-    system_prompt = """You are a safety checker for an investment assistant.
-Fail if the text:
-- recommends specific products (eg "I recommend X", "you should buy")
-- includes buy/sell instructions
-- predicts returns or guarantees outcomes
-Return ONLY JSON:
-{"passed":true|false,"reason":"short or null"}"""
+    system_prompt = """You are a safety checker for an investment discovery assistant.
+
+Goal:
+- Catch clear financial advice and trading instructions.
+- Do NOT fail purely educational content.
+- If the issue is only "recommendation-like wording", mark it as a MINOR issue instead of failing.
+
+Fail (passed=false) ONLY if the text contains ANY of:
+1) Direct recommendations or instructions to act:
+   - "I recommend", "you should", "you need to", "buy X", "sell X", "pick X", "go with X", "invest in X now"
+2) Explicit buy/sell/trade instructions or timing:
+   - "buy today/now", "sell immediately", "enter/exit", "open a position", "when to buy/sell"
+3) Performance predictions or guarantees:
+   - "will outperform", "guaranteed", "risk-free", "no risk", "safe return", "cannot lose", "sure profit"
+
+Minor issue (passed=true) if the text only includes recommendation-like adjectives or soft persuasion WITHOUT telling the user what to do:
+- "ideal", "best", "great option", "perfect", "top pick", "good choice"
+
+Output ONLY valid JSON (no markdown, no extra keys beyond these):
+{"passed": true|false, "severity": "none|minor|fail", "category": "none|advice|instructions|prediction|recommendation_wording|risk_free_claim", "reason": "short string or null"}"""
 
     out = fetch_openai_response(f"TEXT:\n{text}", system_prompt).strip()
     out = out.replace("```json", "").replace("```", "").strip()
+
     try:
         data = json.loads(out)
-        return GuardrailResult(passed=bool(data.get("passed", False)), reason=data.get("reason"))
+        return GuardrailResult(
+            passed=bool(data.get("passed", False)),
+            reason=data.get("reason"),
+        )
     except Exception:
-        return GuardrailResult(passed=False, reason="guardrail_parse_error")
+        # Fallback heuristic so you don't randomly block good content on JSON parse errors.
+        # Only fail hard on truly disallowed patterns.
+        t = text.lower()
+
+        hard_patterns = [
+            r"\bi recommend\b",
+            r"\byou should\b",
+            r"\byou need to\b",
+            r"\bbuy\b.*\b(now|today|immediately)\b",
+            r"\bsell\b.*\b(now|today|immediately)\b",
+            r"\bguarantee(d)?\b",
+            r"\brisk[- ]?free\b",
+            r"\bcannot lose\b",
+            r"\bwill outperform\b",
+        ]
+        if any(re.search(p, t) for p in hard_patterns):
+            return GuardrailResult(passed=False, reason="heuristic_fail_hard_advice_or_guarantee")
+
+        return GuardrailResult(passed=True, reason="heuristic_pass_parse_error")
