@@ -28,6 +28,14 @@ def display_debug_info(result: Dict) -> None:
         st.write(f"Guardrail retries: {result.get('retries', 0)}")
         st.write(f"Result type: {result.get('type', 'n/a')}")
 
+        responses = result.get("responses", [])
+        if responses:
+            st.markdown("### Generation attempts")
+            for i, r in enumerate(responses, start=1):
+                st.markdown(f"**Response {i}:**")
+                st.code(r)
+
+
 def display_suggested_prompts() -> None:
     st.write("Suggested prompts:")
     cols = st.columns(len(SUGGESTED_PROMPTS))

@@ -44,3 +44,4 @@ class ProcessingResult:
     intent: Optional[str] = None
     confidence: Optional[float] = None
     retries: int = 0
+    responses: List[str] = None

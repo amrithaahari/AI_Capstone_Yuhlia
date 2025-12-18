@@ -96,9 +96,19 @@ def process_user_message(message: str, state: ConversationState) -> ProcessingRe
     products = search_products(terms, type_whitelist=whitelist)
 
     # Generate with limited guardrail retries
+    responses: List[str] = []
     last_reason = None
+
     for retry in range(MAX_GUARDRAIL_RETRIES):
-        text = generate_response(state.goal, classification.category, products, state.followup_answers)
+        text = generate_response(
+            state.goal,
+            classification.category,
+            products,
+            state.followup_answers,
+        )
+
+        responses.append(text)
+
         gr = check_guardrails(text)
         if gr.passed:
             return ProcessingResult(
@@ -108,7 +118,9 @@ def process_user_message(message: str, state: ConversationState) -> ProcessingRe
                 intent=classification.category,
                 confidence=classification.confidence,
                 retries=retry,
+                responses=responses,
             )
+
         last_reason = gr.reason
 
     return ProcessingResult(
@@ -118,4 +130,6 @@ def process_user_message(message: str, state: ConversationState) -> ProcessingRe
         intent=classification.category,
         confidence=classification.confidence,
         retries=MAX_GUARDRAIL_RETRIES,
+        responses=responses,
     )
+

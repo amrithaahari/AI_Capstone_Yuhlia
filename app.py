@@ -59,6 +59,7 @@ def main():
                         "confidence": result.confidence,
                         "retries": result.retries,
                         "type": result.type,
+                        "responses": result.responses,
                     }
                 )
 
@@ -72,6 +73,7 @@ def main():
                     "confidence": result.confidence,
                     "retries": result.retries,
                     "type": result.type,
+                    "responses": result.responses,
                 },
             }
         )
