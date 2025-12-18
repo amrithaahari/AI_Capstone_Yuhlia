@@ -53,7 +53,7 @@ Return ONLY valid JSON:
     except Exception:
         return ClassificationResult(category=Intent.unknown.value, confidence=0.0, reasoning="parse_error")
 
-def generate_response(goal: str, intent: str, products: List[Product], followup_answers: List[str]) -> str:
+def generate_response(goal: str, intent: str, products: List[Product], followup_answers: List[str], rewrite_hint: str = "") -> str:
     product_list = "\n".join([
         f"- {p.name}: {p.description} (Sector: {p.sector}, Currency: {p.currency}, TER: {p.ter})"
         for p in products
@@ -87,10 +87,10 @@ Write a response that:
 2) Suggests what to look for when comparing options (fees, diversification, risk, horizon)
 3) Mentions up to {min(5, len(products))} products as examples the user can explore in-app
 """
+    if rewrite_hint:
+        prompt += f"\n\nRewrite constraint (must follow): {rewrite_hint}\n"
 
     return fetch_openai_response(prompt, system_prompt).strip()
-
-
 
 
 def check_guardrails(text: str) -> GuardrailResult:
@@ -112,7 +112,7 @@ Fail (passed=false) ONLY if the text contains ANY of:
 Minor issue (passed=true) if the text only includes recommendation-like adjectives or soft persuasion WITHOUT telling the user what to do:
 - "ideal", "best", "great option", "perfect", "top pick", "good choice"
 
-Output ONLY valid JSON (no markdown, no extra keys beyond these):
+Output ONLY valid JSON:
 {"passed": true|false, "severity": "none|minor|fail", "category": "none|advice|instructions|prediction|recommendation_wording|risk_free_claim", "reason": "short string or null"}"""
 
     out = fetch_openai_response(f"TEXT:\n{text}", system_prompt).strip()
@@ -123,24 +123,35 @@ Output ONLY valid JSON (no markdown, no extra keys beyond these):
         return GuardrailResult(
             passed=bool(data.get("passed", False)),
             reason=data.get("reason"),
+            severity=data.get("severity", "fail"),
+            category=data.get("category", "none"),
         )
     except Exception:
-        # Fallback heuristic so you don't randomly block good content on JSON parse errors.
-        # Only fail hard on truly disallowed patterns.
         t = text.lower()
 
         hard_patterns = [
             r"\bi recommend\b",
             r"\byou should\b",
             r"\byou need to\b",
-            r"\bbuy\b.*\b(now|today|immediately)\b",
-            r"\bsell\b.*\b(now|today|immediately)\b",
+            r"\b(buy|sell)\b.*\b(now|today|immediately)\b",
             r"\bguarantee(d)?\b",
             r"\brisk[- ]?free\b",
             r"\bcannot lose\b",
             r"\bwill outperform\b",
         ]
         if any(re.search(p, t) for p in hard_patterns):
-            return GuardrailResult(passed=False, reason="heuristic_fail_hard_advice_or_guarantee")
+            return GuardrailResult(
+                passed=False,
+                reason="heuristic_fail_hard_advice_or_guarantee",
+                severity="fail",
+                category="advice",
+            )
 
-        return GuardrailResult(passed=True, reason="heuristic_pass_parse_error")
+        # If parsing fails but there's no obvious hard violation, do not block the user.
+        return GuardrailResult(
+            passed=True,
+            reason="heuristic_pass_parse_error",
+            severity="minor",
+            category="none",
+        )
+

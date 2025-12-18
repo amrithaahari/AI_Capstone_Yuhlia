@@ -34,6 +34,13 @@ def display_debug_info(result: Dict) -> None:
             for i, r in enumerate(responses, start=1):
                 st.markdown(f"**Response {i}:**")
                 st.code(r)
+        gr = result.get("guardrail", None)
+        if gr:
+            st.markdown("### Guardrail")
+            st.write(f"Passed: {gr.get('passed')}")
+            st.write(f"Severity: {gr.get('severity')}")
+            st.write(f"Category: {gr.get('category')}")
+            st.write(f"Reason: {gr.get('reason')}")
 
 
 def display_suggested_prompts() -> None:

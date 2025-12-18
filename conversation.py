@@ -97,7 +97,9 @@ def process_user_message(message: str, state: ConversationState) -> ProcessingRe
 
     # Generate with limited guardrail retries
     responses: List[str] = []
-    last_reason = None
+    guardrail_attempts: List[dict] = []
+
+    rewrite_hint = ""  # escalates only when needed
 
     for retry in range(MAX_GUARDRAIL_RETRIES):
         text = generate_response(
@@ -105,11 +107,25 @@ def process_user_message(message: str, state: ConversationState) -> ProcessingRe
             classification.category,
             products,
             state.followup_answers,
+            rewrite_hint=rewrite_hint,
+            # if you keep generate_response signature unchanged, append rewrite_hint into state.followup_answers instead (not ideal)
         )
+
+        # If you can't change generate_response signature, do this instead:
+        if rewrite_hint:
+            text = text + "\n\n(Internal constraint reminder: " + rewrite_hint + ")"
 
         responses.append(text)
 
         gr = check_guardrails(text)
+        guardrail_attempts.append({
+            "passed": gr.passed,
+            "severity": gr.severity,
+            "category": gr.category,
+            "reason": gr.reason,
+        })
+
+        # Accept on pass, including "minor" issues
         if gr.passed:
             return ProcessingResult(
                 type="success",
@@ -119,17 +135,26 @@ def process_user_message(message: str, state: ConversationState) -> ProcessingRe
                 confidence=classification.confidence,
                 retries=retry,
                 responses=responses,
+                # if you add this field (recommended) expose guardrail_attempts in debug too
+                # guardrails=guardrail_attempts,
             )
 
-        last_reason = gr.reason
+        # Only retry on actual failures, with an explicit constraint
+        rewrite_hint = (
+            "Rewrite to be purely educational. Remove any recommendation language "
+            "(eg ideal/best/great choice), remove calls-to-action, remove buy/sell/timing, "
+            "remove predictions/guarantees, and avoid the term 'risk-free'."
+        )
 
+    # All retries failed
     return ProcessingResult(
         type="guardrail_failure",
-        message="I cannot phrase that safely. General guidance: compare fees (TER), diversification, and risk level. Explore ETFs and funds in-app to learn what each product is designed for. Investments can go down as well as up.",
+        message="I cannot phrase that safely. General guidance: compare costs, diversification, and risk level. Explore ETFs and funds in-app to learn what each product is designed for. Investments can go down as well as up.",
         products=products,
         intent=classification.category,
         confidence=classification.confidence,
         retries=MAX_GUARDRAIL_RETRIES,
         responses=responses,
+        # guardrails=guardrail_attempts,
     )
 

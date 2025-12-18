@@ -25,6 +25,8 @@ class Product:
 class GuardrailResult:
     passed: bool
     reason: Optional[str] = None
+    severity: str = "none"  # "none" | "minor" | "fail"
+    category: str = "none"  # "none" | "advice" | "instructions" | "prediction" | "recommendation_wording" | "risk_free_claim"
 
 @dataclass
 class ConversationState:
