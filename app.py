@@ -5,7 +5,6 @@ from conversation import process_user_message, reset_state
 from ui_components import (
     init_session_state,
     display_suggested_prompts,
-    display_product_table,
     display_debug_info,
 )
 
@@ -31,8 +30,6 @@ def main():
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.write(msg["content"])
-            if msg.get("products"):
-                display_product_table(msg["products"])
             if st.session_state.show_debug and msg.get("debug"):
                 display_debug_info(msg["debug"])
 
@@ -50,8 +47,6 @@ def main():
         with st.chat_message("assistant"):
             result = process_user_message(user_input, st.session_state.conversation_state)
             st.write(result.message)
-            if result.products:
-                display_product_table(result.products)
             if st.session_state.show_debug:
                 display_debug_info(
                     {

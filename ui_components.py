@@ -4,22 +4,6 @@ from typing import List, Dict
 from models import Product, ConversationState
 from config import SUGGESTED_PROMPTS
 
-def display_product_table(products: List[Product]) -> None:
-    if not products:
-        return
-    st.subheader("Relevant products (examples)")
-    st.dataframe(
-        {
-            "Name": [p.name for p in products],
-            "Description": [p.description for p in products],
-            "Sector": [p.sector for p in products],
-            "Currency": [p.currency for p in products],
-            "Region": [p.region for p in products],
-            "ESG": [p.esg for p in products],
-            "TER": [p.ter for p in products],
-        },
-        use_container_width=True,
-    )
 
 def display_debug_info(result: Dict) -> None:
     with st.expander("Debug", expanded=False):
