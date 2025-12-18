@@ -53,42 +53,111 @@ Return ONLY valid JSON:
     except Exception:
         return ClassificationResult(category=Intent.unknown.value, confidence=0.0, reasoning="parse_error")
 
-def generate_response(goal: str, intent: str, products: List[Product], followup_answers: List[str], rewrite_hint: str = "") -> str:
-    product_list = "\n".join([
-        f"- {p.name}: {p.description} (Sector: {p.sector}, Currency: {p.currency}, TER: {p.ter})"
-        for p in products
-    ]) or "- (No matching products found)"
+from typing import List
+import re
 
-    context = f"User goal: {goal}\nIntent: {intent}\n"
-    if followup_answers:
-        context += "Follow-up answers:\n" + "\n".join([f"- {a}" for a in followup_answers]) + "\n"
+from typing import List
+import re
 
-    system_prompt = """You are Yulia, an educational investment discovery assistant for a banking app.
-Hard rules:
+def generate_response(
+    goal: str,
+    intent: str,
+    products: List[Product],
+    followup_answers: List[str],
+    rewrite_hint: str = "",
+) -> str:
+    goal_clean = (goal or "").strip().lower()
+
+    # -------------------------
+    # Decide whether to show products
+    # -------------------------
+    asked_for_products = any(
+        kw in goal_clean
+        for kw in [
+            "what options",
+            "what products",
+            "available",
+            "which etf",
+            "show me",
+            "list",
+        ]
+    )
+
+    is_first_turn = len(followup_answers) == 0
+    should_show_products = asked_for_products or not is_first_turn
+
+    # -------------------------
+    # System prompt (global rules)
+    # -------------------------
+    system_prompt = """You are Yulia, an educational investment discovery assistant.
+
+Rules:
 - No financial advice or recommendations
 - No buy/sell instructions
-- No performance predictions or guarantees
-- Do not ask for amounts, balances, or when exactly to invest
-- Only mention products provided
+- No predictions or guarantees
+- Never claim anything is risk-free
+- Do not ask about amounts, balances, or timing
 
-Style:
-- Educational, neutral, short paragraphs, bullets allowed
-- Treat products as examples to explore, not picks
-- Avoid recommendation adjectives: ideal, best, great choice, should, recommend
-- Do not imply risk-free. Use ‘can be less volatile’ only when appropriate"""
+Beginner intent:
+- Use very simple language
+- Avoid jargon and acronyms (explain if used)
+- Do not mention TER unless the user already asked about fees
 
-    prompt = f"""{context}
+Conversation:
+- Always ask 2–3 relevant follow-up questions
+- If this is the first response to a beginner and they did not ask for products, do NOT list products.
+"""
 
-Available products (examples only):
+    # -------------------------
+    # Prompt A: First-touch beginner (no products)
+    # -------------------------
+    if intent == "beginner" and not should_show_products:
+        prompt = f"""
+User goal: {goal}
+
+Write a simple, reassuring explanation of investing for someone who has never invested before.
+
+Requirements:
+- Explain investing in plain language (use an analogy if helpful)
+- Explain what an ETF is in ONE simple sentence
+- Give a short “how to get started” checklist without telling them what to buy
+- Do NOT list products
+- Ask exactly 3 follow-up questions:
+  1) short-term vs long-term money
+  2) broad/simple vs themes (e.g. Switzerland, tech)
+  3) whether they have ever invested before (yes/no)
+"""
+
+    # -------------------------
+    # Prompt B: Product exploration phase
+    # -------------------------
+    else:
+        product_list = "\n".join(
+            f"- {p.name}: {p.description}"
+            for p in products
+        ) or "- (No matching products found)"
+
+        prompt = f"""
+User goal: {goal}
+Intent: {intent}
+
+Products available in-app (examples only):
 {product_list}
 
-Write a response that:
-1) Explains relevant concepts for the intent
-2) Suggests what to look for when comparing options (fees, diversification, risk, horizon)
-3) Mentions up to {min(5, len(products))} products as examples the user can explore in-app
+Write a beginner-friendly response that:
+- Explains how to compare options at a high level:
+  - what they hold (broad vs narrow)
+  - cost/fees (plain language, no jargon)
+  - risk in simple terms
+- Mentions up to 5 products as examples to explore (not recommendations)
+- Asks 2 follow-up questions to refine the next step
 """
+
+    # -------------------------
+    # Optional rewrite constraint (used only after guardrail failure)
+    # -------------------------
     if rewrite_hint:
-        prompt += f"\n\nRewrite constraint (must follow): {rewrite_hint}\n"
+        prompt += f"\nRewrite constraint: {rewrite_hint}\n"
 
     return fetch_openai_response(prompt, system_prompt).strip()
 
