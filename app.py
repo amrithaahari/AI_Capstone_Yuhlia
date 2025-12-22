@@ -1,3 +1,4 @@
+# app.py
 import streamlit as st
 
 from database import init_database
@@ -8,10 +9,12 @@ from ui_components import (
     display_debug_info,
 )
 
+
 @st.cache_resource
 def db_ready() -> bool:
     init_database()
     return True
+
 
 def main():
     st.set_page_config(page_title="Yulia Assistant", page_icon="💎", layout="wide")
@@ -47,34 +50,31 @@ def main():
         with st.chat_message("assistant"):
             result = process_user_message(user_input, st.session_state.conversation_state)
             st.write(result.message)
+
+            debug_payload = {
+                "intent": result.intent,
+                "confidence": result.confidence,
+                "retries": result.retries,
+                "type": result.type,
+                "responses": result.responses,
+                "guardrail": result.guardrail,
+            }
+
             if st.session_state.show_debug:
-                display_debug_info(
-                    {
-                        "intent": result.intent,
-                        "confidence": result.confidence,
-                        "retries": result.retries,
-                        "type": result.type,
-                        "responses": result.responses,
-                    }
-                )
+                display_debug_info(debug_payload)
 
         st.session_state.messages.append(
             {
                 "role": "assistant",
                 "content": result.message,
                 "products": result.products or [],
-                "debug": {
-                    "intent": result.intent,
-                    "confidence": result.confidence,
-                    "retries": result.retries,
-                    "type": result.type,
-                    "responses": result.responses,
-                },
+                "debug": debug_payload,
             }
         )
 
-        if result.type in {"mismatch", "guardrail_failure"}:
+        if result.type in {"guardrail_failure", "error"}:
             reset_state(st.session_state.conversation_state)
+
 
 if __name__ == "__main__":
     main()

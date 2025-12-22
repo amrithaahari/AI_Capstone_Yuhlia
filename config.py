@@ -1,36 +1,33 @@
+# config.py
 """
 Configuration constants for Yulia Assistant
 """
 from enum import Enum
 
-# Thresholds and limits
-CONFIDENCE_THRESHOLD = 0.7
-MAX_FOLLOWUP_QUESTIONS = 2
+# Limits
 MAX_GUARDRAIL_RETRIES = 3
-TOP_K_PRODUCTS = 5
 
 # Database
 DATABASE_NAME = "yuh_products.db"
+TOP_K_PRODUCTS = 5
+
 
 class Intent(str, Enum):
-    beginner = "beginner"
-    capital_preservation = "capital_preservation"
+    yuh_related = "yuh_related"
+    basic_knowledge = "basic_knowledge"
     unknown = "unknown"
 
+
 INTENT_LABELS = {
-    Intent.beginner: "Beginner",
-    Intent.capital_preservation: "Capital preservation",
-    Intent.unknown: "Unknown",
+    Intent.yuh_related: "Yuh / in-app availability",
+    Intent.basic_knowledge: "Investing basics / concepts",
+    Intent.unknown: "Unknown / unrelated",
 }
 
-# Follow-up questions (decision-based, minimal)
-FOLLOWUP_QUESTIONS = [
-    ("goal_type", "Are you mainly looking to learn the basics, or to explore more conservative, lower-volatility options?"),
-    ("time_horizon", "Is this for money you might need in the next 1–3 years, or longer term?"),
-]
-
+# Keep suggested prompts aligned to the new intents and answer-first behavior
 SUGGESTED_PROMPTS = [
-    "I'm new to investing and want to learn the basics",
-    "I want to preserve my capital with minimal risk",
+    "What's an ETF?",
+    "How do fees affect returns?",
+    "Does yuh have index funds?",
     "What investment options are available on yuh?",
 ]
