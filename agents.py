@@ -32,12 +32,23 @@ def classify_intent(goal: str, followup_answers: List[str]) -> ClassificationRes
 
     system_prompt = """You are an intent classifier for an investment discovery assistant.
 Classify the user into exactly one category:
-- beginner
-- capital_preservation
+- basic_knowledge
+- yuh_related
 - unknown
 
+# basic_knowledge example questions:
+- what's an ETF?
+- I want to start investing but have no idea where to begin.
+- I want to grow my money over many years
+
+# yuh_related example questions:
+- do you have etfs?
+- does yuh have cryptos that I can invest in?
+- Does yuh have stocks?
+** OR any other question that shows interest in the products of our neobank or uses the words yuh OR you
+
 Return ONLY valid JSON:
-{"category":"beginner|capital_preservation|unknown","confidence":0.0-1.0,"reasoning":"brief"}"""
+{"category":"basic_knowledge|yuh_related|unknown","confidence":0.0-1.0,"reasoning":"brief"}"""
 
     out = fetch_openai_response(context, system_prompt).strip()
     out = out.replace("```json", "").replace("```", "").strip()
@@ -53,11 +64,6 @@ Return ONLY valid JSON:
     except Exception:
         return ClassificationResult(category=Intent.unknown.value, confidence=0.0, reasoning="parse_error")
 
-from typing import List
-import re
-
-from typing import List
-import re
 
 def generate_response(
     goal: str,
@@ -105,13 +111,13 @@ Beginner intent:
 
 Conversation:
 - Always ask 2–3 relevant follow-up questions
-- If this is the first response to a beginner and they did not ask for products, do NOT list products.
+- If this is the first response and they did not ask for products, do NOT list products.
 """
 
     # -------------------------
     # Prompt A: First-touch beginner (no products)
     # -------------------------
-    if intent == "beginner" and not should_show_products:
+    if intent == "basic_knowledge" and not should_show_products:
         prompt = f"""
 User goal: {goal}
 
@@ -119,7 +125,6 @@ Write a simple, reassuring explanation of investing for someone who has never in
 
 Requirements:
 - Explain investing in plain language (use an analogy if helpful)
-- Explain what an ETF is in ONE simple sentence
 - Give a short “how to get started” checklist without telling them what to buy
 - Do NOT list products
 - Ask exactly 3 follow-up questions:
