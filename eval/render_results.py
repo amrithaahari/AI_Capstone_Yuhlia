@@ -98,6 +98,10 @@ tbody tr:hover td{background:rgba(15,22,34,.35)}
 .col-id{width:110px}
 .col-pass{width:90px}
 .col-reason{width:320px}
+.col-intent{width:170px}
+.col-conf{width:110px}
+.col-retries{width:90px}
+
 
 .pill{
   display:inline-flex; align-items:center; gap:6px;
@@ -231,6 +235,9 @@ function openModalFromRow(row){
   document.getElementById("m_reason").innerText = data.reason || "";
   document.getElementById("m_input").innerText = data.input || "";
   document.getElementById("m_output").innerText = data.output || "";
+  document.getElementById("m_intent").innerText = data.intent || "";
+  document.getElementById("m_conf").innerText = data.confidence || "";
+  document.getElementById("m_retries").innerText = data.retries || "";
 
   const overlay = document.getElementById("overlay");
   overlay.style.display = "flex";
@@ -311,9 +318,22 @@ def main():
         grade = r.get("grade", {})
         is_pass = bool(grade.get("pass", False)) or bool(grade.get("overall_pass", False))
         reason = grade.get("reason", "") or ""
+        meta = r.get("meta", {}) or {}
+        intent = meta.get("intent") or r.get("intent") or ""
+        confidence = meta.get("confidence")
+        retries = r.get("meta", {}).get("retries")
+        if retries is None:
+            retries = r.get("retries", 0)
+
+        # confidence formatting
+        try:
+            conf_val = float(confidence) if confidence is not None else None
+        except Exception:
+            conf_val = None
+        conf_str = f"{conf_val:.2f}" if conf_val is not None else ""
 
         # Search blob (id + input + reason)
-        search_blob = f"{case_id} {inp} {reason}"
+        search_blob = f"{case_id} {intent} {conf_str} {retries} {inp} {reason}"
 
         payload = {
             "id": str(case_id),
@@ -321,20 +341,26 @@ def main():
             "reason": str(reason),
             "input": str(inp),
             "output": str(out),
+            "intent": str(intent),
+            "confidence": conf_str,
+            "retries": str(retries),
         }
 
         rows_html.append(f"""
-<tr data-row="main"
-    data-pass="{'pass' if is_pass else 'fail'}"
-    data-search="{escape(search_blob)}"
-    data-payload="{escape(json.dumps(payload, ensure_ascii=False))}"
-    style="cursor:pointer">
-  <td class="col-id mono">{escape(str(case_id))}</td>
-  <td class="col-pass">{pill_html(is_pass)}</td>
-  <td>{escape(inp)}</td>
-  <td class="col-reason small">{escape(str(reason))}</td>
-</tr>
-""")
+        <tr data-row="main"
+            data-pass="{'pass' if is_pass else 'fail'}"
+            data-search="{escape(search_blob)}"
+            data-payload="{escape(json.dumps(payload, ensure_ascii=False))}"
+            style="cursor:pointer">
+          <td class="col-id mono">{escape(str(case_id))}</td>
+          <td class="col-pass">{pill_html(is_pass)}</td>
+          <td class="col-intent">{escape(str(intent))}</td>
+          <td class="col-conf mono">{escape(conf_str)}</td>
+          <td class="col-retries mono">{escape(str(retries))}</td>
+          <td>{escape(inp)}</td>
+          <td class="col-reason small">{escape(str(reason))}</td>
+        </tr>
+        """)
 
     html = f"""<!doctype html>
 <html>
@@ -378,13 +404,16 @@ def main():
       <div class="tableWrap">
         <table>
           <thead>
-            <tr>
-              <th class="col-id">ID</th>
-              <th class="col-pass">Result</th>
-              <th>Input</th>
-              <th class="col-reason">Reason</th>
-            </tr>
-          </thead>
+              <tr>
+                <th class="col-id">ID</th>
+                <th class="col-pass">Result</th>
+                <th class="col-intent">Intent</th>
+                <th class="col-conf">Confidence</th>
+                <th class="col-retries">Retries</th>
+                <th>Input</th>
+                <th class="col-reason">Reason</th>
+              </tr>
+            </thead>
           <tbody>
             {''.join(rows_html)}
           </tbody>
@@ -410,6 +439,12 @@ def main():
           <h4>Reason</h4>
           <pre id="m_reason"></pre>
         </div>
+        <div class="block" style="margin-bottom:12px">
+          <h4>Meta</h4>
+          <pre>Intent: <span id="m_intent"></span>
+        Confidence: <span id="m_conf"></span>
+        Retries: <span id="m_retries"></span></pre>
+        </div>
         <div class="modalGrid">
           <div class="block">
             <h4>Input</h4>
@@ -418,6 +453,7 @@ def main():
           <div class="block">
             <h4>Output</h4>
             <pre id="m_output"></pre>
+          
           </div>
         </div>
       </div>
