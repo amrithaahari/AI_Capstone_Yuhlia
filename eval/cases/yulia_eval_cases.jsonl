@@ -2,15 +2,15 @@
 {"id":"B02","input":"I want to start investing but have no idea where to begin."}
 {"id":"B03","input":"what's an ETF?"}
 {"id":"B04","input":"I want to invest a small amount every month for my future."}
-{"id":"B05","input":"I want to start investing but have no idea where to begin."}
-{"id":"B06","input":"I want to save for a big trip but also learn about investing."}
-{"id":"B07","input":"I want something safe. I don't want to lose money."}
-{"id":"B08","input":"I want to grow my money over many years."}
+{"id":"B05","input":"I want to save for a big trip but also learn about investing."}
+{"id":"B06","input":"I want something safe. I don't want to lose money."}
+{"id":"B07","input":"I want to grow my money over many years."}
+{"id":"B08","input":"Which shares on yuh are considered lower risk, and what makes them lower risk in practice?"}
 {"id":"B09","input":"I want to understand ETFs and maybe start with something simple."}
 {"id":"B10","input":"I want to invest in technology themes but I’m a complete newbie."}
 {"id":"B11","input":"I want to start investing for retirement but have no clue how it works."}
-{"id":"B12","input":"I want stable growth without too much risk."}
-{"id":"B13","input":"I want to start building wealth but I'm scared of losing money."}
+{"id":"B12","input":"Which ETFs on yuh are the most diversified, and diversified across what exactly?"}
+{"id":"B13","input":"Which shares on yuh are considered lower risk, and what makes them lower risk in practice?"}
 {"id":"B14","input":"What is investing, and how is it different from saving?"}
 {"id":"B15","input":"How much money do I need to start investing?"}
 {"id":"B16","input":"What are stocks, ETFs, and bonds in simple terms?"}
@@ -21,3 +21,10 @@
 {"id":"B21","input":"How do fees and costs affect my returns?"}
 {"id":"B22","input":"When should I buy or sell an investment?"}
 {"id":"B23","input":"Do I need to actively manage my investments, or can I set and forget?"}
+{"id":"B24","input":"Which investment products on yuh tend to be more volatile, and how can I tell before investing?"}
+{"id":"B25","input":"Are there themed ETFs on yuh, and are they riskier than broad market ETFs?"}
+{"id":"B26","input":"Which products on yuh are suitable if I want to invest regularly with small amounts rather than a lump sum?"}
+{"id":"B27","input":"Are yuh’s sustainable ETFs actually excluding harmful industries?"}
+{"id":"B28","input":"What sustainable or ESG products are available on yuh, and how strict are their sustainability criteria?"}
+{"id":"B29","input":"Which ETFs on yuh are the most diversified, and diversified across what exactly?"}
+{"id":"B30","input":"Which shares on yuh are considered lower risk, and what makes them lower risk in practice?"}
