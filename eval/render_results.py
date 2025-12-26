@@ -1,11 +1,10 @@
 # eval/render_results.py
 # Usage:
-#   python eval/render_results.py --in eval/last_results.jsonl --out eval/last_results.html
+#   python eval/render_results.py --context eval/output/result_context.jsonl --products eval/output/result_products.jsonl --out eval/output/report.html
 #
-# Changes vs previous version:
-# - Removes Category column
-# - Clicking a row opens a modal with: input, output, reason, pass/fail
-# - Includes search + pass/fail filter
+# Renders a single HTML report with 2 tabs:
+# - Context eval
+# - Yuh products eval
 
 import argparse
 import json
@@ -49,7 +48,33 @@ body{
   overflow:hidden;
 }
 
-.metrics{display:grid; grid-template-columns: repeat(4, 1fr); gap:12px; padding:14px}
+.tabs{
+  display:flex;
+  gap:10px;
+  padding:14px;
+  border-bottom:1px solid var(--border);
+  background:rgba(15,22,34,.4);
+}
+.tabBtn{
+  cursor:pointer;
+  border:1px solid var(--border);
+  background:rgba(15,22,34,.65);
+  color:var(--text);
+  border-radius:999px;
+  padding:8px 12px;
+  font-size:13px;
+  font-weight:700;
+}
+.tabBtn:hover{border-color:#3b82f6}
+.tabBtn.active{
+  border-color:#3b82f6;
+  box-shadow:0 0 0 2px rgba(59,130,246,.15) inset;
+}
+
+.tabPanel{display:none}
+.tabPanel.active{display:block}
+
+.metrics{display:grid; grid-template-columns: repeat(5, 1fr); gap:12px; padding:14px}
 .metric{
   padding:12px;
   background:rgba(15,22,34,.65);
@@ -97,11 +122,10 @@ tbody td{
 tbody tr:hover td{background:rgba(15,22,34,.35)}
 .col-id{width:110px}
 .col-pass{width:90px}
-.col-reason{width:320px}
 .col-intent{width:170px}
 .col-conf{width:110px}
 .col-retries{width:90px}
-
+.col-reason{width:320px}
 
 .pill{
   display:inline-flex; align-items:center; gap:6px;
@@ -202,14 +226,18 @@ pre{
   .metrics{grid-template-columns:1fr 1fr}
   .modalGrid{grid-template-columns:1fr}
   .col-reason{display:none}
+  .col-intent{display:none}
+  .col-conf{display:none}
+  .col-retries{display:none}
 }
 """
 
 JS = """
-function applyFilters(){
-  const q = document.getElementById("search").value.toLowerCase();
-  const f = document.getElementById("filter").value; // all|pass|fail
-  const rows = document.querySelectorAll("tbody tr[data-row='main']");
+function applyFilters(panelId){
+  const panel = document.getElementById(panelId);
+  const q = panel.querySelector(".search").value.toLowerCase();
+  const f = panel.querySelector(".filter").value; // all|pass|fail
+  const rows = panel.querySelectorAll("tbody tr[data-row='main']");
   let shown = 0;
 
   rows.forEach(r=>{
@@ -222,7 +250,7 @@ function applyFilters(){
     if(show) shown++;
   });
 
-  document.getElementById("shown").innerText = shown;
+  panel.querySelector(".shown").innerText = shown;
 }
 
 function openModalFromRow(row){
@@ -239,17 +267,42 @@ function openModalFromRow(row){
   document.getElementById("m_conf").innerText = data.confidence || "";
   document.getElementById("m_retries").innerText = data.retries || "";
 
-  const overlay = document.getElementById("overlay");
-  overlay.style.display = "flex";
+  document.getElementById("overlay").style.display = "flex";
 }
 
 function closeModal(){
   document.getElementById("overlay").style.display = "none";
 }
 
+function setActiveTab(tabName){
+  document.querySelectorAll(".tabBtn").forEach(b=>b.classList.remove("active"));
+  document.querySelectorAll(".tabPanel").forEach(p=>p.classList.remove("active"));
+
+  document.getElementById("btn_"+tabName).classList.add("active");
+  document.getElementById("panel_"+tabName).classList.add("active");
+
+  applyFilters("panel_"+tabName);
+}
+
 document.addEventListener("DOMContentLoaded", ()=>{
-  document.getElementById("search").addEventListener("input", applyFilters);
-  document.getElementById("filter").addEventListener("change", applyFilters);
+  document.getElementById("btn_context").addEventListener("click", ()=>setActiveTab("context"));
+  document.getElementById("btn_products").addEventListener("click", ()=>setActiveTab("products"));
+
+  document.querySelectorAll(".tabPanel").forEach(panel=>{
+    const panelId = panel.id;
+    panel.querySelector(".search").addEventListener("input", ()=>applyFilters(panelId));
+    panel.querySelector(".filter").addEventListener("change", ()=>applyFilters(panelId));
+    panel.querySelector(".resetBtn").addEventListener("click", ()=>{
+      panel.querySelector(".search").value = "";
+      panel.querySelector(".filter").value = "all";
+      applyFilters(panelId);
+    });
+
+    panel.querySelectorAll("tbody tr[data-row='main']").forEach(r=>{
+      r.addEventListener("click", ()=>openModalFromRow(r));
+    });
+  });
+
   document.getElementById("closeBtn").addEventListener("click", closeModal);
   document.getElementById("overlay").addEventListener("click", (e)=>{
     if(e.target && e.target.id === "overlay") closeModal();
@@ -258,11 +311,7 @@ document.addEventListener("DOMContentLoaded", ()=>{
     if(e.key === "Escape") closeModal();
   });
 
-  document.querySelectorAll("tbody tr[data-row='main']").forEach(r=>{
-    r.addEventListener("click", ()=>openModalFromRow(r));
-  });
-
-  applyFilters();
+  setActiveTab("context");
 });
 """
 
@@ -281,58 +330,45 @@ def pill_html(is_pass: bool) -> str:
         return '<span class="pill good"><span class="dot"></span>PASS</span>'
     return '<span class="pill bad"><span class="dot"></span>FAIL</span>'
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--in", dest="inp", required=True)
-    ap.add_argument("--out", dest="out", default=None)
+def get_grade(item: dict) -> dict:
+    return item.get("grade", {}) or {}
 
-    args = ap.parse_args()
-
-    in_path = Path(args.inp)
-
-    if args.out:
-        out_path = Path(args.out)
-    else:
-        out_path = in_path.with_suffix(".html")
-
-
-    items = load_jsonl(in_path)
-
+def summarize(items: list) -> dict:
     total = len(items)
     passed = 0
     for r in items:
-        g = r.get("grade", {})
+        g = get_grade(r)
         is_pass = bool(g.get("pass", False)) or bool(g.get("overall_pass", False))
         if is_pass:
             passed += 1
     failed = total - passed
     pass_rate = (passed / total * 100) if total else 0.0
+    return {"total": total, "passed": passed, "failed": failed, "pass_rate": pass_rate}
 
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
+def build_rows_html(items: list) -> str:
     rows_html = []
     for i, r in enumerate(items):
         case_id = r.get("id", f"row_{i}")
         inp = r.get("input", "")
         out = r.get("output_text", "")
-        grade = r.get("grade", {})
-        is_pass = bool(grade.get("pass", False)) or bool(grade.get("overall_pass", False))
-        reason = grade.get("reason", "") or ""
         meta = r.get("meta", {}) or {}
+
         intent = meta.get("intent") or r.get("intent") or ""
-        confidence = meta.get("confidence")
-        retries = r.get("meta", {}).get("retries")
+        retries = meta.get("retries")
         if retries is None:
             retries = r.get("retries", 0)
+        confidence = meta.get("confidence")
 
-        # confidence formatting
         try:
             conf_val = float(confidence) if confidence is not None else None
         except Exception:
             conf_val = None
         conf_str = f"{conf_val:.2f}" if conf_val is not None else ""
 
-        # Search blob (id + input + reason)
+        grade = get_grade(r)
+        is_pass = bool(grade.get("pass", False)) or bool(grade.get("overall_pass", False))
+        reason = grade.get("reason", "") or ""
+
         search_blob = f"{case_id} {intent} {conf_str} {retries} {inp} {reason}"
 
         payload = {
@@ -347,20 +383,86 @@ def main():
         }
 
         rows_html.append(f"""
-        <tr data-row="main"
-            data-pass="{'pass' if is_pass else 'fail'}"
-            data-search="{escape(search_blob)}"
-            data-payload="{escape(json.dumps(payload, ensure_ascii=False))}"
-            style="cursor:pointer">
-          <td class="col-id mono">{escape(str(case_id))}</td>
-          <td class="col-pass">{pill_html(is_pass)}</td>
-          <td class="col-intent">{escape(str(intent))}</td>
-          <td class="col-conf mono">{escape(conf_str)}</td>
-          <td class="col-retries mono">{escape(str(retries))}</td>
-          <td>{escape(inp)}</td>
-          <td class="col-reason small">{escape(str(reason))}</td>
+<tr data-row="main"
+    data-pass="{'pass' if is_pass else 'fail'}"
+    data-search="{escape(search_blob)}"
+    data-payload="{escape(json.dumps(payload, ensure_ascii=False))}"
+    style="cursor:pointer">
+  <td class="col-id mono">{escape(str(case_id))}</td>
+  <td class="col-pass">{pill_html(is_pass)}</td>
+  <td class="col-intent">{escape(str(intent))}</td>
+  <td class="col-conf mono">{escape(conf_str)}</td>
+  <td class="col-retries mono">{escape(str(retries))}</td>
+  <td>{escape(inp)}</td>
+  <td class="col-reason small">{escape(str(reason))}</td>
+</tr>
+""")
+    return "".join(rows_html)
+
+def build_panel(panel_id: str, source_path: Path, items: list) -> str:
+    m = summarize(items)
+    rows = build_rows_html(items)
+    return f"""
+<div id="{panel_id}" class="tabPanel">
+  <div class="metrics">
+    <div class="metric"><div class="k">Pass rate</div><div class="v">{m["pass_rate"]:.1f}%</div></div>
+    <div class="metric"><div class="k">Total cases</div><div class="v">{m["total"]}</div></div>
+    <div class="metric"><div class="k">Passed</div><div class="v">{m["passed"]}</div></div>
+    <div class="metric"><div class="k">Failed</div><div class="v">{m["failed"]}</div></div>
+    <div class="metric"><div class="k">Source</div><div class="v mono" style="font-size:12px">{escape(source_path.name)}</div></div>
+  </div>
+
+  <div class="controls">
+    <input class="input search" placeholder="Search by id, intent, input text, reason…" />
+    <select class="select filter">
+      <option value="all">All</option>
+      <option value="pass">Pass only</option>
+      <option value="fail">Fail only</option>
+    </select>
+    <button class="btn resetBtn">Reset</button>
+    <div class="sub" style="margin-left:auto">Shown: <span class="shown">0</span> / {m["total"]}</div>
+  </div>
+
+  <div class="tableWrap">
+    <table>
+      <thead>
+        <tr>
+          <th class="col-id">ID</th>
+          <th class="col-pass">Result</th>
+          <th class="col-intent">Intent</th>
+          <th class="col-conf">Conf</th>
+          <th class="col-retries">Retries</th>
+          <th>Input</th>
+          <th class="col-reason">Reason</th>
         </tr>
-        """)
+      </thead>
+      <tbody>
+        {rows}
+      </tbody>
+    </table>
+  </div>
+</div>
+"""
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--context", required=True, help="JSONL from run_eval.py (context judge)")
+    ap.add_argument("--products", required=True, help="JSONL from run_eval_products.py (yuh products judge)")
+    ap.add_argument("--out", default=None, help="Output HTML path")
+    args = ap.parse_args()
+
+    context_path = Path(args.context)
+    products_path = Path(args.products)
+
+    out_path = Path(args.out) if args.out else context_path.with_suffix(".html")
+
+    context_items = load_jsonl(context_path)
+    products_items = load_jsonl(products_path)
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    panel_context = build_panel("panel_context", context_path, context_items)
+    panel_products = build_panel("panel_products", products_path, products_items)
 
     html = f"""<!doctype html>
 <html>
@@ -375,50 +477,19 @@ def main():
     <div class="header">
       <div>
         <div class="h1">Yulia Eval Report</div>
-        <div class="sub">Source: {escape(str(in_path))} · Generated: {escape(now)}</div>
+        <div class="sub">Generated: {escape(now)}</div>
       </div>
       <div class="sub">Click a row to view details</div>
     </div>
 
     <div class="card">
-      <div class="metrics">
-        <div class="metric"><div class="k">Pass rate</div><div class="v">{pass_rate:.1f}%</div></div>
-        <div class="metric"><div class="k">Total cases</div><div class="v">{total}</div></div>
-        <div class="metric"><div class="k">Passed</div><div class="v">{passed}</div></div>
-        <div class="metric"><div class="k">Failed</div><div class="v">{failed}</div></div>
+      <div class="tabs">
+        <button class="tabBtn" id="btn_context">Context eval</button>
+        <button class="tabBtn" id="btn_products">Yuh products eval</button>
       </div>
 
-      <div class="controls">
-        <input id="search" class="input" placeholder="Search by id, input text, reason…" />
-        <select id="filter" class="select">
-          <option value="all">All</option>
-          <option value="pass">Pass only</option>
-          <option value="fail">Fail only</option>
-        </select>
-        <button class="btn" onclick="document.getElementById('search').value=''; document.getElementById('filter').value='all'; applyFilters();">
-          Reset
-        </button>
-        <div class="sub" style="margin-left:auto">Shown: <span id="shown">0</span> / {total}</div>
-      </div>
-
-      <div class="tableWrap">
-        <table>
-          <thead>
-              <tr>
-                <th class="col-id">ID</th>
-                <th class="col-pass">Result</th>
-                <th class="col-intent">Intent</th>
-                <th class="col-conf">Confidence</th>
-                <th class="col-retries">Retries</th>
-                <th>Input</th>
-                <th class="col-reason">Reason</th>
-              </tr>
-            </thead>
-          <tbody>
-            {''.join(rows_html)}
-          </tbody>
-        </table>
-      </div>
+      {panel_context}
+      {panel_products}
     </div>
 
     <div class="footer">Report file: {escape(str(out_path))}</div>
@@ -436,14 +507,14 @@ def main():
       </div>
       <div class="modalBody">
         <div class="block" style="margin-bottom:12px">
-          <h4>Reason</h4>
-          <pre id="m_reason"></pre>
-        </div>
-        <div class="block" style="margin-bottom:12px">
           <h4>Meta</h4>
           <pre>Intent: <span id="m_intent"></span>
-        Confidence: <span id="m_conf"></span>
-        Retries: <span id="m_retries"></span></pre>
+Confidence: <span id="m_conf"></span>
+Retries: <span id="m_retries"></span></pre>
+        </div>
+        <div class="block" style="margin-bottom:12px">
+          <h4>Reason</h4>
+          <pre id="m_reason"></pre>
         </div>
         <div class="modalGrid">
           <div class="block">
@@ -453,7 +524,6 @@ def main():
           <div class="block">
             <h4>Output</h4>
             <pre id="m_output"></pre>
-          
           </div>
         </div>
       </div>

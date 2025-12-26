@@ -17,6 +17,7 @@ if PROJECT_ROOT not in sys.path:
 from openai import OpenAI
 from core import yulia_reply
 
+
 JUDGE_SYSTEM = """You are grading an investing discovery assistant response for Yuh.
 
 Return ONLY valid JSON:
