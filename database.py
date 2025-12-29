@@ -1,8 +1,10 @@
+# database.py
 import sqlite3
 from typing import List, Optional, Tuple
 
 from config import DATABASE_NAME, TOP_K_PRODUCTS
 from models import Product
+
 
 def init_database() -> None:
     conn = sqlite3.connect(DATABASE_NAME, check_same_thread=False)
@@ -12,6 +14,7 @@ def init_database() -> None:
         conn.close()
         raise RuntimeError("products table not found in database")
     conn.close()
+
 
 def _score_row(row: Tuple, terms: List[str]) -> int:
     # Row is: (product_ID, Name, Description, Sector, Currency, Region, ESG_score, TER, Type)
@@ -46,6 +49,7 @@ def _score_row(row: Tuple, terms: List[str]) -> int:
         if tl in blob["desc"]:
             score += 1
     return score
+
 
 def search_products(
     query_terms: List[str],
@@ -82,8 +86,7 @@ def search_products(
     rows = cur.fetchall()
     conn.close()
 
-    # Rank rows crudely to avoid random LIKE ordering
-    ranked = sorted(rows, key=lambda r: _score_row(r, query_terms), reverse=True)[:top_k]
+    ranked = sorted(rows, key=lambda r: _score_row(r, query_terms), reverse=True)[:int(top_k)]
 
     products: List[Product] = []
     for r in ranked:
@@ -100,6 +103,7 @@ def search_products(
         ))
     return products
 
+
 def search_products_filtered(
     *,
     type_contains_all: Optional[List[str]] = None,
@@ -107,17 +111,19 @@ def search_products_filtered(
     max_ter: Optional[float] = None,
     esg_scores_in: Optional[List[str]] = None,
     top_k: int = TOP_K_PRODUCTS,
+    order_by_esg: bool = False,
 ) -> List[Product]:
     """Structured product search using parameterized SQL.
 
-    Supports the constraints needed for the unified Yuh-availability path:
+    Supports:
     - Type contains ALL substrings (case-insensitive)
     - Region exact match
     - TER upper bound
     - ESG_score in list
+    - Optional ESG ordering AAA -> AA -> A
     """
     type_contains_all = [t.strip() for t in (type_contains_all or []) if (t or "").strip()]
-    esg_scores_in = [s.strip() for s in (esg_scores_in or []) if (s or "").strip()]
+    esg_scores_in = [s.strip().upper() for s in (esg_scores_in or []) if (s or "").strip()]
 
     conn = sqlite3.connect(DATABASE_NAME, check_same_thread=False)
     cur = conn.cursor()
@@ -144,11 +150,29 @@ def search_products_filtered(
 
     where_clause = " AND ".join(where) if where else "1=1"
 
+    if order_by_esg:
+        order_clause = """
+        ORDER BY
+          CASE ESG_score
+            WHEN 'AAA' THEN 1
+            WHEN 'AA'  THEN 2
+            WHEN 'A'   THEN 3
+            ELSE 99
+          END ASC,
+          CASE WHEN TER IS NULL THEN 1 ELSE 0 END,
+          TER ASC,
+          Name ASC
+        """.strip()
+    else:
+        order_clause = """
+        ORDER BY CASE WHEN TER IS NULL THEN 1 ELSE 0 END, TER ASC, Name ASC
+        """.strip()
+
     sql = f"""
         SELECT product_ID, Name, Description, Sector, Currency, Region, ESG_score, TER, Type
         FROM products
         WHERE {where_clause}
-        ORDER BY CASE WHEN TER IS NULL THEN 1 ELSE 0 END, TER ASC, Name ASC
+        {order_clause}
         LIMIT ?
     """.strip()
 
@@ -173,8 +197,8 @@ def search_products_filtered(
         ))
     return products
 
+
 def get_type_overview(limit_types: int = 20) -> List[Tuple[str, int]]:
-    """Return available Types in the catalog with counts, ordered by count desc."""
     conn = sqlite3.connect(DATABASE_NAME, check_same_thread=False)
     cur = conn.cursor()
 
@@ -191,23 +215,19 @@ def get_type_overview(limit_types: int = 20) -> List[Tuple[str, int]]:
     )
     rows = cur.fetchall()
     conn.close()
-
-    # rows: [(Type, n), ...]
     return [(r[0], int(r[1])) for r in rows]
 
 
 def get_sample_products_for_types(types: List[str], per_type: int = 2) -> List[Product]:
-    """Fetch a small sample of products for each Type (for UI table + grounding)."""
+    """Fetch a small sample of products for each Type, round-robin across types."""
     if not types:
         return []
 
     conn = sqlite3.connect(DATABASE_NAME, check_same_thread=False)
     cur = conn.cursor()
 
-    out: List[Product] = []
     per_type = max(1, min(int(per_type), 5))
 
-    # Keep it simple and deterministic: order by TER (nulls last) then Name.
     sql = """
         SELECT product_ID, Name, Description, Sector, Currency, Region, ESG_score, TER, Type
         FROM products
@@ -216,11 +236,13 @@ def get_sample_products_for_types(types: List[str], per_type: int = 2) -> List[P
         LIMIT ?
     """.strip()
 
+    buckets: List[List[Product]] = []
     for t in types:
         cur.execute(sql, (t, per_type))
         rows = cur.fetchall()
+        bucket: List[Product] = []
         for r in rows:
-            out.append(Product(
+            bucket.append(Product(
                 id=r[0],
                 name=r[1],
                 type=r[8],
@@ -231,6 +253,15 @@ def get_sample_products_for_types(types: List[str], per_type: int = 2) -> List[P
                 esg=r[6],
                 ter=r[7],
             ))
+        if bucket:
+            buckets.append(bucket)
 
     conn.close()
+
+    out: List[Product] = []
+    for i in range(per_type):
+        for b in buckets:
+            if i < len(b):
+                out.append(b[i])
+
     return out
