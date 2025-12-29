@@ -4,7 +4,7 @@ from typing import List, Optional
 
 from agents import classify_intent, generate_response, check_guardrails
 from config import MAX_GUARDRAIL_RETRIES, Intent, TOP_K_PRODUCTS
-from database import search_products, search_products_filtered
+from database import search_products, search_products_filtered, get_type_overview, get_sample_products_for_types
 from models import ConversationState, ProcessingResult, Product
 
 
@@ -75,6 +75,20 @@ def _extract_structured_filters(goal: str) -> dict:
         "esg_scores_in": esg_scores_in,
     }
 
+def _is_overview_query(text: str) -> bool:
+    t = (text or "").lower().strip()
+    # Overview intent: user wants a list of what's available, not a filtered search
+    patterns = [
+        r"\bwhat (investment )?options\b",
+        r"\bwhat (can i|could i) invest in\b",
+        r"\bwhat('?s| is) available\b",
+        r"\bwhat products\b",
+        r"\bwhat do you have\b",
+        r"\bavailable on yuh\b",
+        r"\binvestment options\b",
+    ]
+    return any(re.search(p, t) for p in patterns)
+
 
 def process_user_message(message: str, state: ConversationState) -> ProcessingResult:
     msg = (message or "").strip()
@@ -83,33 +97,53 @@ def process_user_message(message: str, state: ConversationState) -> ProcessingRe
 
     state.goal = msg
 
+    # Ensure this is ALWAYS defined
+    generation_goal = state.goal
+
     classification = classify_intent(state.goal, followup_answers=[])
     state.last_intent = classification.category
     state.last_confidence = classification.confidence
 
     products: List[Product] = []
+
     if classification.category == Intent.yuh_related.value:
-        filters = _extract_structured_filters(state.goal)
 
-        has_structured = bool(
-            (filters.get("type_contains_all"))
-            or (filters.get("region"))
-            or (filters.get("max_ter") is not None)
-            or (filters.get("esg_scores_in"))
-        )
+        # 1) Overview path: do NOT overwrite products afterwards
+        if _is_overview_query(state.goal):
+            overview = get_type_overview(limit_types=20)
+            types = [t for (t, _) in overview]
 
-        if has_structured:
-            products = search_products_filtered(
-                type_contains_all=filters.get("type_contains_all") or None,
-                region=filters.get("region"),
-                max_ter=filters.get("max_ter"),
-                esg_scores_in=filters.get("esg_scores_in") or None,
-                top_k=TOP_K_PRODUCTS,
+            # Prefer a diverse sample; do not slice too early
+            products = get_sample_products_for_types(types, per_type=2)
+
+            overview_lines = [f"- {t} ({n})" for (t, n) in overview]
+            catalog_overview_block = (
+                "CATALOG_TYPE_OVERVIEW (from yuh_products.db):\n" + "\n".join(overview_lines)
             )
+            generation_goal = state.goal + "\n\n" + catalog_overview_block
+
+        # 2) Non-overview path: your existing structured/fuzzy logic
         else:
-            # fallback to previous fuzzy term search
-            terms = [t for t in re.split(r"\W+", state.goal) if t]
-            products = search_products(terms, type_whitelist=None)[:TOP_K_PRODUCTS]
+            filters = _extract_structured_filters(state.goal)
+
+            has_structured = bool(
+                (filters.get("type_contains_all"))
+                or (filters.get("region"))
+                or (filters.get("max_ter") is not None)
+                or (filters.get("esg_scores_in"))
+            )
+
+            if has_structured:
+                products = search_products_filtered(
+                    type_contains_all=filters.get("type_contains_all") or None,
+                    region=filters.get("region"),
+                    max_ter=filters.get("max_ter"),
+                    esg_scores_in=filters.get("esg_scores_in") or None,
+                    top_k=TOP_K_PRODUCTS,
+                )
+            else:
+                terms = [t for t in re.split(r"\W+", state.goal) if t]
+                products = search_products(terms, type_whitelist=None)
 
     responses: List[str] = []
     last_guardrail = None
@@ -117,7 +151,7 @@ def process_user_message(message: str, state: ConversationState) -> ProcessingRe
 
     for retry in range(MAX_GUARDRAIL_RETRIES):
         raw_response = generate_response(
-            state.goal,
+            generation_goal,
             classification.category,
             products=products,
             followup_answers=[],
@@ -155,3 +189,4 @@ def process_user_message(message: str, state: ConversationState) -> ProcessingRe
         responses=responses,
         guardrail=last_guardrail,
     )
+

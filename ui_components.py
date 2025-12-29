@@ -48,7 +48,6 @@ def render_products_table(products: list[Product]) -> None:
                 "Region": getattr(p, "region", "") or "",
                 "TER": ter,
                 "ESG_score": getattr(p, "esg_score", "") or getattr(p, "esg", "") or "",
-                "ISIN": getattr(p, "isin", "") or "",
                 "Offer": "Commission-free" if ("special savings" in p_type.lower()) else "",
                 "_special": ("special savings" in p_type.lower()),
             }

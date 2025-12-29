@@ -172,3 +172,65 @@ def search_products_filtered(
             ter=r[7],
         ))
     return products
+
+def get_type_overview(limit_types: int = 20) -> List[Tuple[str, int]]:
+    """Return available Types in the catalog with counts, ordered by count desc."""
+    conn = sqlite3.connect(DATABASE_NAME, check_same_thread=False)
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        SELECT Type, COUNT(*) as n
+        FROM products
+        WHERE Type IS NOT NULL AND TRIM(Type) != ''
+        GROUP BY Type
+        ORDER BY n DESC
+        LIMIT ?
+        """,
+        (int(limit_types),),
+    )
+    rows = cur.fetchall()
+    conn.close()
+
+    # rows: [(Type, n), ...]
+    return [(r[0], int(r[1])) for r in rows]
+
+
+def get_sample_products_for_types(types: List[str], per_type: int = 2) -> List[Product]:
+    """Fetch a small sample of products for each Type (for UI table + grounding)."""
+    if not types:
+        return []
+
+    conn = sqlite3.connect(DATABASE_NAME, check_same_thread=False)
+    cur = conn.cursor()
+
+    out: List[Product] = []
+    per_type = max(1, min(int(per_type), 5))
+
+    # Keep it simple and deterministic: order by TER (nulls last) then Name.
+    sql = """
+        SELECT product_ID, Name, Description, Sector, Currency, Region, ESG_score, TER, Type
+        FROM products
+        WHERE Type = ?
+        ORDER BY CASE WHEN TER IS NULL THEN 1 ELSE 0 END, TER ASC, Name ASC
+        LIMIT ?
+    """.strip()
+
+    for t in types:
+        cur.execute(sql, (t, per_type))
+        rows = cur.fetchall()
+        for r in rows:
+            out.append(Product(
+                id=r[0],
+                name=r[1],
+                type=r[8],
+                description=r[2],
+                sector=r[3],
+                currency=r[4],
+                region=r[5],
+                esg=r[6],
+                ter=r[7],
+            ))
+
+    conn.close()
+    return out
