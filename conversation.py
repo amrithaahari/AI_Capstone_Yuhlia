@@ -96,6 +96,8 @@ def _validate_filters_llm(raw: Dict[str, Any]) -> dict:
     notes = raw.get("notes")
     notes = str(notes).strip() if notes is not None else ""
 
+
+
     return {
         "type_contains_all": tca_norm,
         "region": region,

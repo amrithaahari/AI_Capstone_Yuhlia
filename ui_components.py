@@ -1,6 +1,7 @@
 # ui_components.py
 import streamlit as st
 import pandas as pd
+from typing import Optional
 
 from models import ConversationState, Product
 from config import SUGGESTED_PROMPTS
@@ -78,3 +79,28 @@ def render_products_table(products: list[Product]) -> None:
         use_container_width=True,
         hide_index=True,
     )
+
+def render_assistant_message_with_table(message: str, products: Optional[list[Product]]) -> None:
+    TOKENS = ("[[PRODUCT_TABLE]]")
+    msg = (message or "").strip()
+
+    token_found = None
+    for tok in TOKENS:
+        if tok in msg:
+            token_found = tok
+            break
+
+    if token_found and products:
+        before, after = msg.split(token_found, 1)
+        if before.strip():
+            st.markdown(before.strip())
+        render_products_table(products)
+        if after.strip():
+            st.markdown(after.strip())
+        return
+
+    # fallback
+    if msg:
+        st.markdown(msg)
+    if products:
+        render_products_table(products)

@@ -175,6 +175,9 @@ Interpretation rules:
   Treat as ethical intent (AAA/AA/A) and add a short disclaimer in notes.
 - If the message is a broad overview question like "What investment options are available on yuh?":
   return empty filters (null/empty) and set notes="overview_query".
+- If the user asks about crypto/cryptocurrencies/digital assets or asks what cryptos are available:
+  set type_contains_all=["Crypto"] and leave other filters null unless explicitly stated.
+
 """
 
 def extract_filters(goal: str) -> Dict[str, Any]:
@@ -232,13 +235,19 @@ When describing "investment options on yuh", only use these high-level categorie
 - Bonds
 Do NOT introduce categories like "funds" unless the user explicitly mentions "funds".
 
+IMPORTANT UI RULES:
+- Never output a markdown/ASCII table.
+- Never list products as rows/columns.
+- The UI will render the product table separately.
+
 If the prompt contains "CATALOG_SEARCH_RESULT: 0_MATCHES":
 - Say clearly that no products matched the current filters.
 - Ask exactly ONE short follow-up question to relax ONE constraint (remove World, remove Special savings, relax ESG to include BBB, or remove TER cap).
 - Do not recommend specific products.
 
 Follow-ups:
-- Ask at most 1–2 follow-up questions, only if it helps answer next.
+- Ask at most 1 follow-up question, only if it helps proceed.
+- Never ask about amounts, expected returns, or timing.
 
 Style:
 - Plain language. Define jargon in-line.
@@ -249,11 +258,18 @@ Hard bans: "you should", "I recommend", "buy", "sell", "invest in X", "guarantee
 
     product_list = _format_products(products, limit=40) if should_use_products else "- (Not provided for this intent)"
 
+    # If we are processing a follow-up answer, include it explicitly
+    followup_block = ""
+    if followup_answers:
+        followup_block = "Follow-up answer(s) from the user:\n" + "\n".join([f"- {a}" for a in followup_answers])
+
     prompt = f"""User message:
 {goal}
 
 Intent:
 {intent}
+
+{followup_block}
 
 Product matches (internal grounding; do not name products in the response):
 {product_list}
@@ -263,19 +279,27 @@ Write the response using this structure:
 Direct answer (1–2 sentences).
 - Must directly address the user's question.
 - If they ask about availability, answer at a high level (e.g. "Yuh offers ETFs, shares, and crypto in the Invest section").
+- Do not recommend, do not tell them what to do.
 
 Short explanation (2–6 bullets).
 - Explain the concept in simple terms.
-- If the user asked for ethical/sustainable exclusions, you may say ESG is a proxy and may not guarantee excluding a specific industry.
+- If the user asks to exclude specific industries (e.g., defense/military), state that exclusions may be approximate because the catalog mainly supports filtering via ESG_score and general fields.
 
-Optional follow-up question(s) (0–2 questions).
-- Only if needed, and never ask about amounts or expected returns.
+Table intro (1 sentence).
+- If products are provided OR the user asked about availability/options, include:
+"Here are some of our <relevant product category> listed in the table below. Please note that these are just for your information and in no way or form are advice or recommendations:"
+- Then output this token on its own line:
+[[PRODUCT_TABLE]]
+- Do NOT output any table content.
+
+Optional follow-up question(s) (0–1 question).
+- Only if needed to proceed and should be related to investment products at yuh.
+- Never ask about amounts, expected returns, or timing.
 
 {rewrite_hint}
 """
 
     return fetch_openai_response(prompt, system_prompt)
-
 
 # -------------------------
 # Guardrails

@@ -7,7 +7,7 @@ from ui_components import (
     init_session_state,
     display_suggested_prompts,
     display_debug_info,
-    render_products_table,
+    render_assistant_message_with_table
 )
 
 
@@ -34,11 +34,13 @@ def main():
     # Render chat history (INCLUDING product tables)
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
-            st.write(msg.get("content", ""))
+            content = msg.get("content", "")
+            products = msg.get("products") or []
 
-            # Show products table for assistant messages when present
-            if msg["role"] == "assistant" and msg.get("products"):
-                render_products_table(msg["products"])
+            if msg["role"] == "assistant":
+                render_assistant_message_with_table(content, products)
+            else:
+                st.write(content)
 
             if st.session_state.show_debug and msg.get("debug"):
                 display_debug_info(msg["debug"])
@@ -56,11 +58,7 @@ def main():
 
         with st.chat_message("assistant"):
             result = process_user_message(user_input, st.session_state.conversation_state)
-            st.write(result.message)
-
-            # Render products table for the current response
-            if result.products:
-                render_products_table(result.products)
+            render_assistant_message_with_table(result.message, result.products or [])
 
             debug_payload = {
                 "intent": result.intent,

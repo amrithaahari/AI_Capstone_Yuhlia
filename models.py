@@ -36,10 +36,17 @@ class GuardrailResult:
 
 @dataclass
 class ConversationState:
-    # Keep minimal state for now. Multi-turn follow-ups are intentionally disabled.
+    # Current main user goal (first message of a thread)
     goal: str = ""
+
+    # Last classification
     last_intent: Optional[str] = None
     last_confidence: Optional[float] = None
+
+    # Follow-up handling
+    awaiting_followup: bool = False
+    last_followup_question: Optional[str] = None
+
 
 
 @dataclass
