@@ -17,6 +17,7 @@ class ClassificationResult:
 class Product:
     id: int
     name: str
+    type: str
     description: str
     sector: Optional[str] = None
     currency: Optional[str] = None

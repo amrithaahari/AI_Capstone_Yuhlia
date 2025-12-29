@@ -1,47 +1,11 @@
 # conversation.py
-from typing import List
+import re
+from typing import List, Optional
 
 from agents import classify_intent, generate_response, check_guardrails
 from config import MAX_GUARDRAIL_RETRIES, Intent, TOP_K_PRODUCTS
-from database import search_products
+from database import search_products, search_products_filtered
 from models import ConversationState, ProcessingResult, Product
-
-
-_YUH_AVAILABILITY_TRIGGERS = [
-    "does yuh have",
-    "do you have",
-    "what options",
-    "what products",
-    "available",
-    "in the app",
-    "on yuh",
-    "yuh",
-]
-
-
-def _wants_yuh_availability(message: str) -> bool:
-    m = (message or "").lower()
-    return any(t in m for t in _YUH_AVAILABILITY_TRIGGERS)
-
-
-def _extract_search_terms_for_yuh(message: str) -> List[str]:
-    m = (message or "").lower()
-    terms: List[str] = []
-
-    if "index" in m:
-        terms += ["Index", "ETF"]
-    if "etf" in m:
-        terms += ["ETF"]
-    if "stock" in m or "stocks" in m or "share" in m or "shares" in m:
-        terms += ["Stock", "Share"]
-    if "crypto" in m:
-        terms += ["Crypto"]
-    if "bond" in m:
-        terms += ["Bond", "Bond ETF"]
-    if "money market" in m:
-        terms += ["Money Market"]
-
-    return terms or ["ETF"]
 
 
 def reset_state(state: ConversationState) -> None:
@@ -50,10 +14,72 @@ def reset_state(state: ConversationState) -> None:
     state.last_confidence = None
 
 
+def _extract_structured_filters(goal: str) -> dict:
+    """Heuristic filter extraction (no new LLM prompts).
+
+    Used only when classify_intent returns yuh_related.
+    """
+    text = (goal or "").lower()
+
+    type_contains_all: List[str] = []
+    region: Optional[str] = None
+    max_ter: Optional[float] = None
+    esg_scores_in: Optional[List[str]] = None
+
+    # Region: world/global
+    if any(k in text for k in ["world", "global", "worldwide"]):
+        region = "World"
+
+    # Sustainable shares/stocks -> Share + ESG A/AA/AAA
+    if any(k in text for k in ["sustainable", "sustainability", "esg", "responsible"]):
+        if any(k in text for k in ["stock", "stocks", "share", "shares"]):
+            type_contains_all = ["Share"]
+            esg_scores_in = ["AAA", "AA", "A"]
+
+    # ETFs
+    if "etf" in text or "etfs" in text:
+        # Low-fee / cheap: upsell special savings ETFs (commission-free) per your rule
+        if any(k in text for k in ["cheap", "low fee", "low-fee", "low cost", "low-cost", "low ter", "low-ter"]):
+            type_contains_all = ["ETF", "Special savings"]
+            max_ter = 0.003  # default cap unless user specifies another
+
+        # Explicit special-savings / commission-free mention
+        if any(k in text for k in ["special savings", "commission free", "commission-free"]):
+            type_contains_all = ["ETF", "Special savings"]
+
+        # If user asked ETFs but we didn't set special savings, keep it broad
+        if not type_contains_all:
+            type_contains_all = ["ETF"]
+
+    # If user specifies an explicit TER cap like "0.2%" or "0.25 %"
+    m_pct = re.search(r"(\d+(?:\.\d+)?)\s*%", text)
+    if m_pct:
+        try:
+            pct = float(m_pct.group(1))
+            max_ter = pct / 100.0
+        except Exception:
+            pass
+    else:
+        # Or a decimal cap like "TER under 0.003"
+        m_dec = re.search(r"ter\s*(?:<=|<|under|below)\s*(0\.\d+)", text)
+        if m_dec:
+            try:
+                max_ter = float(m_dec.group(1))
+            except Exception:
+                pass
+
+    return {
+        "type_contains_all": type_contains_all,
+        "region": region,
+        "max_ter": max_ter,
+        "esg_scores_in": esg_scores_in,
+    }
+
+
 def process_user_message(message: str, state: ConversationState) -> ProcessingResult:
     msg = (message or "").strip()
     if not msg:
-        return ProcessingResult(type="error", message="Enter a question about investing concepts or what’s available in Yuh.")
+        return ProcessingResult(type="error", message="Please enter a message.")
 
     state.goal = msg
 
@@ -61,38 +87,51 @@ def process_user_message(message: str, state: ConversationState) -> ProcessingRe
     state.last_intent = classification.category
     state.last_confidence = classification.confidence
 
-    # Retrieve products only when it helps answer (yuh-related availability/offerings)
     products: List[Product] = []
-    if classification.category == Intent.yuh_related.value or _wants_yuh_availability(state.goal):
-        terms = _extract_search_terms_for_yuh(state.goal)
-        products = search_products(terms, type_whitelist=None)[:TOP_K_PRODUCTS]
+    if classification.category == Intent.yuh_related.value:
+        filters = _extract_structured_filters(state.goal)
+
+        has_structured = bool(
+            (filters.get("type_contains_all"))
+            or (filters.get("region"))
+            or (filters.get("max_ter") is not None)
+            or (filters.get("esg_scores_in"))
+        )
+
+        if has_structured:
+            products = search_products_filtered(
+                type_contains_all=filters.get("type_contains_all") or None,
+                region=filters.get("region"),
+                max_ter=filters.get("max_ter"),
+                esg_scores_in=filters.get("esg_scores_in") or None,
+                top_k=TOP_K_PRODUCTS,
+            )
+        else:
+            # fallback to previous fuzzy term search
+            terms = [t for t in re.split(r"\W+", state.goal) if t]
+            products = search_products(terms, type_whitelist=None)[:TOP_K_PRODUCTS]
 
     responses: List[str] = []
     last_guardrail = None
     rewrite_hint = ""
 
     for retry in range(MAX_GUARDRAIL_RETRIES):
-        text = generate_response(
-            goal=state.goal,
-            intent=classification.category,
+        raw_response = generate_response(
+            state.goal,
+            classification.category,
             products=products,
             followup_answers=[],
             rewrite_hint=rewrite_hint,
         )
-        responses.append(text)
+        responses.append(raw_response)
 
-        gr = check_guardrails(text)
-        last_guardrail = {
-            "passed": gr.passed,
-            "severity": gr.severity,
-            "category": gr.category,
-            "reason": gr.reason,
-        }
+        gr = check_guardrails(raw_response)
+        last_guardrail = {"passed": gr.passed, "reason": gr.reason, "severity": gr.severity, "category": gr.category}
 
         if gr.passed:
             return ProcessingResult(
                 type="success",
-                message=text,
+                message=raw_response,
                 products=products,
                 intent=classification.category,
                 confidence=classification.confidence,
@@ -102,9 +141,8 @@ def process_user_message(message: str, state: ConversationState) -> ProcessingRe
             )
 
         rewrite_hint = (
-            "Rewrite to be purely educational and neutral. Remove any recommendation language "
-            "(e.g., ideal/best/great choice), remove calls-to-action, remove buy/sell/timing, "
-            "remove predictions/guarantees, and avoid 'risk-free'."
+            "Rewrite to remove recommendation language (e.g., ideal/best/great choice), remove calls-to-action, "
+            "remove buy/sell/timing, remove predictions/guarantees, and avoid 'risk-free'."
         )
 
     return ProcessingResult(

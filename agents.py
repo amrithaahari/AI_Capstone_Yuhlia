@@ -2,9 +2,10 @@
 import json
 import os
 import re
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 
 from config import Intent
+from config import LLM_ENABLED
 from models import ClassificationResult, GuardrailResult, Product
 
 
@@ -33,12 +34,108 @@ def fetch_openai_response(prompt: str, system_prompt: Optional[str] = None) -> s
     )
     return resp.choices[0].message.content or ""
 
+def _offline_fallback_response(goal: str, intent: str) -> str:
+    """
+    Used when OPENAI_API_KEY is not set.
+    Allows Streamlit + DB to function without LLM calls.
+    """
+    if intent == Intent.yuh_related.value:
+        return (
+            "Yuh offers a range of investment products such as ETFs and other instruments.\n\n"
+            "You can explore the available products in the table below."
+        )
+
+    if intent == Intent.basic_knowledge.value:
+        return (
+            "Investing is about putting money into assets with the aim of growing it over time.\n\n"
+            "Different products have different levels of risk, cost, and diversification."
+        )
+
+    return (
+        "I can help explain investing concepts or show what investment products are available in Yuh."
+    )
+
+
 
 def _strip_code_fences(text: str) -> str:
     t = (text or "").strip()
     t = t.replace("```json", "").replace("```JSON", "").replace("```", "").strip()
     return t
 
+
+_PRODUCT_FILTER_SYSTEM = """You extract product search filters for a Yuh product catalog query.
+
+Return ONLY valid JSON with this schema:
+{
+  "type_contains": null|string,
+  "sector": null|string,
+  "region": null|string,
+  "currency": null|string,
+  "stock_exchange": null|string,
+  "esg_min": null|number,
+  "ter_max": null|number,
+  "commission_free": null|boolean
+}
+
+Rules:
+- Only set fields that are clearly implied by the user query. Otherwise null.
+- If user asks for "low fee" / "low cost" / "cheap", set ter_max=0.30 by default.
+- If user asks "commission-free" / "no commission" or "special savings", set commission_free=true.
+- If user asks for ESG/sustainable/green, set esg_min=60 by default (ESG_score scale assumed 0–100).
+- If user asks for "low fee ETFs", set type_contains="ETF" and commission_free=true (so Type contains Special savings).
+- Never invent specific sectors/regions/exchanges unless the user says them.
+"""
+
+def parse_product_filters(user_query: str) -> Dict[str, Any]:
+    q = (user_query or "").lower()
+
+    f: Dict[str, Any] = {
+        "type_contains": None,
+        "sector": None,
+        "region": None,
+        "currency": None,
+        "stock_exchange": None,
+        "esg_min": None,
+        "ter_max": None,
+        "commission_free": None,
+    }
+
+    # deterministic hints
+    if "commission free" in q or "commission-free" in q or "no commission" in q or "special savings" in q:
+        f["commission_free"] = True
+
+    if ("sustainable" in q or "esg" in q or "green" in q):
+        f["esg_grade_in"] = ["AAA", "AA", "A"]
+
+    if ("low fee" in q or "low cost" in q or "cheap" in q) and ("etf" in q or "etfs" in q):
+        f["type_contains"] = "Special savings (ETF)"
+
+    # if they explicitly mention ETFs, set type_contains
+    if "etf" in q or "etfs" in q:
+        f["type_contains"] = "ETF"
+
+    # If we got anything deterministically, return
+    if any(v is not None for v in f.values()):
+        return f
+
+    # ---- SAFE GUARD: no API key, do NOT call LLM ----
+    if not LLM_ENABLED:
+        return f
+
+    # LLM fallback (only if key exists)
+    out = _strip_code_fences(fetch_openai_response(
+        prompt=f"User query:\n{user_query}\n",
+        system_prompt=_PRODUCT_FILTER_SYSTEM
+    ))
+
+    try:
+        data = json.loads(out)
+        for k in f.keys():
+            if k not in data:
+                data[k] = None
+        return data
+    except Exception:
+        return f
 
 # -------------------------
 # Intent classification
@@ -66,6 +163,37 @@ Pick EXACTLY ONE category:
 Return ONLY valid JSON:
 {"category":"basic_knowledge|yuh_related|unknown","confidence":0.0-1.0,"reasoning":"brief"}"""
 
+def _offline_classify_intent(goal: str) -> ClassificationResult:
+    g = (goal or "").lower().strip()
+
+    # High precision yuh routing
+    if any(re.search(p, g) for p in _YUH_OVERRIDE_PATTERNS):
+        return ClassificationResult(
+            category=Intent.yuh_related.value,
+            confidence=0.95,
+            reasoning="offline_heuristic_yuh_override",
+        )
+
+    # Basic investing concept routing (simple, conservative)
+    basic_markers = [
+        "what is", "what's", "etf", "index fund", "fees", "ter", "risk",
+        "diversification", "returns", "stocks", "bonds", "portfolio",
+        "investing", "invest", "compound", "inflation"
+    ]
+    if any(m in g for m in basic_markers):
+        return ClassificationResult(
+            category=Intent.basic_knowledge.value,
+            confidence=0.70,
+            reasoning="offline_heuristic_basic_knowledge",
+        )
+
+    return ClassificationResult(
+        category=Intent.unknown.value,
+        confidence=0.55,
+        reasoning="offline_heuristic_unknown",
+    )
+
+
 
 def classify_intent(goal: str, followup_answers: List[str]) -> ClassificationResult:
     g = (goal or "").lower().strip()
@@ -78,7 +206,13 @@ def classify_intent(goal: str, followup_answers: List[str]) -> ClassificationRes
             reasoning="heuristic_yuh_override",
         )
 
-    out = _strip_code_fences(fetch_openai_response(f"User message:\n{goal}\n", _CLASSIFIER_SYSTEM_PROMPT))
+    if not LLM_ENABLED:
+        return _offline_classify_intent(goal)
+
+
+    out = _strip_code_fences(
+        fetch_openai_response(f"User message:\n{goal}\n", _CLASSIFIER_SYSTEM_PROMPT)
+    )
 
     try:
         data = json.loads(out)
@@ -150,6 +284,10 @@ def generate_response(
     followup_answers: List[str],
     rewrite_hint: str = "",
 ) -> str:
+
+    if not LLM_ENABLED:
+        return _offline_fallback_response(goal, intent)
+
     # Decide if product catalog should be used
     user_asked_availability = _user_asked_availability_or_options(goal)
     should_use_products = (intent == Intent.yuh_related.value) or user_asked_availability
@@ -163,8 +301,10 @@ Non-negotiable behavior:
 4) Do not ask about amounts, balances, income, or how much they can invest.
 
 Products:
-- If the user asks about what Yuh has (availability), answer yes/no/unknown and then show relevant in-app products from the provided list (as examples, not recommendations).
-- If the user asks a pure concept question, do not list products unless they explicitly asked for options in Yuh.
+- Never list or name specific products in the text response.
+- Product availability and examples are shown separately in the UI.
+- Do not say "no matching products" or similar statements.
+
 
 Follow-ups:
 - Ask at most 1–2 follow-up questions, only if it helps answer next.
@@ -180,22 +320,26 @@ Hard bans: "you should", "I recommend", "buy", "sell", "invest in X", "guarantee
     product_list = _format_products(products, limit=40) if should_use_products else "- (Not provided for this intent)"
 
     prompt = f"""User message:
-{goal}
+    {goal}
 
-Intent:
-{intent}
+    Intent:
+    {intent}
 
-Available in-app products (use only if intent is yuh_related OR user asked what’s available in Yuh):
-{product_list}
+    Write the response using this structure:
 
-Write the response using this structure:
+    Direct answer (1–2 sentences).
+    - Must directly address the user's question.
+    - If they ask about availability, answer at a high level (e.g. "Yuh offers ETFs and other investment products").
 
-Direct answer (1–2 sentences) that directly address the question.
+    Short explanation (2–6 bullets).
+    - Explain the concept in simple terms.
+    - No product names.
+    - No instructions or recommendations.
 
-Short explanation (2–6 bullets max). Only relevant points. Provide examples that would help a beginner understand. 
-
-Follow-up with questions that are relevant to the intent and leads to the display of yuh related products
-"""
+    Optional follow-up:
+    - Ask at most 1 clarifying question, only if it helps refine understanding.
+    - Never ask about money amounts or timing.
+    """
 
     if rewrite_hint:
         prompt += f"\nRewrite constraint: {rewrite_hint}\n"
@@ -207,6 +351,16 @@ Follow-up with questions that are relevant to the intent and leads to the displa
 # Guardrails
 # -------------------------
 def check_guardrails(text: str) -> GuardrailResult:
+    if not LLM_ENABLED:
+        # In offline mode, assume text is safe.
+        # We already control generation, so this is acceptable.
+        return GuardrailResult(
+            passed=True,
+            reason="offline_mode_no_guardrails",
+            severity="none",
+            category="none",
+        )
+
     system_prompt = """You are a safety checker for an investment discovery assistant.
 
 Goal:

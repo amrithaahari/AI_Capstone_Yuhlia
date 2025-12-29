@@ -7,6 +7,8 @@ from enum import Enum
 # Limits
 MAX_GUARDRAIL_RETRIES = 3
 
+LLM_ENABLED = True
+
 # Database
 DATABASE_NAME = "yuh_products.db"
 TOP_K_PRODUCTS = 5

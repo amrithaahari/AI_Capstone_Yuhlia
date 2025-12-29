@@ -90,6 +90,80 @@ def search_products(
         products.append(Product(
             id=r[0],
             name=r[1],
+            type=r[8],
+            description=r[2],
+            sector=r[3],
+            currency=r[4],
+            region=r[5],
+            esg=r[6],
+            ter=r[7],
+        ))
+    return products
+
+def search_products_filtered(
+    *,
+    type_contains_all: Optional[List[str]] = None,
+    region: Optional[str] = None,
+    max_ter: Optional[float] = None,
+    esg_scores_in: Optional[List[str]] = None,
+    top_k: int = TOP_K_PRODUCTS,
+) -> List[Product]:
+    """Structured product search using parameterized SQL.
+
+    Supports the constraints needed for the unified Yuh-availability path:
+    - Type contains ALL substrings (case-insensitive)
+    - Region exact match
+    - TER upper bound
+    - ESG_score in list
+    """
+    type_contains_all = [t.strip() for t in (type_contains_all or []) if (t or "").strip()]
+    esg_scores_in = [s.strip() for s in (esg_scores_in or []) if (s or "").strip()]
+
+    conn = sqlite3.connect(DATABASE_NAME, check_same_thread=False)
+    cur = conn.cursor()
+
+    where = []
+    params: List[object] = []
+
+    for sub in type_contains_all:
+        where.append("LOWER(Type) LIKE LOWER(?)")
+        params.append(f"%{sub}%")
+
+    if region:
+        where.append("Region = ?")
+        params.append(region)
+
+    if max_ter is not None:
+        where.append("TER IS NOT NULL AND TER <= ?")
+        params.append(float(max_ter))
+
+    if esg_scores_in:
+        placeholders = ",".join(["?"] * len(esg_scores_in))
+        where.append(f"ESG_score IN ({placeholders})")
+        params.extend(esg_scores_in)
+
+    where_clause = " AND ".join(where) if where else "1=1"
+
+    sql = f"""
+        SELECT product_ID, Name, Description, Sector, Currency, Region, ESG_score, TER, Type
+        FROM products
+        WHERE {where_clause}
+        ORDER BY CASE WHEN TER IS NULL THEN 1 ELSE 0 END, TER ASC, Name ASC
+        LIMIT ?
+    """.strip()
+
+    params.append(int(top_k))
+
+    cur.execute(sql, params)
+    rows = cur.fetchall()
+    conn.close()
+
+    products: List[Product] = []
+    for r in rows:
+        products.append(Product(
+            id=r[0],
+            name=r[1],
+            type=r[8],
             description=r[2],
             sector=r[3],
             currency=r[4],
