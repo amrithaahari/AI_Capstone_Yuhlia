@@ -11,7 +11,7 @@ LLM_ENABLED = True
 
 # Database
 DATABASE_NAME = "yuh_products.db"
-TOP_K_PRODUCTS = 5
+TOP_K_PRODUCTS = 50
 
 
 class Intent(str, Enum):
