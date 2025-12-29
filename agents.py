@@ -190,16 +190,11 @@ Available in-app products (use only if intent is yuh_related OR user asked what�
 
 Write the response using this structure:
 
-A) Direct answer (1–2 sentences). Must directly address the question.
+Direct answer (1–2 sentences) that directly address the question.
 
-B) Short explanation (2–6 bullets max). Only relevant points.
+Short explanation (2–6 bullets max). Only relevant points. Provide examples that would help a beginner understand. 
 
-C) If intent is yuh_related (or the user asked what’s available in Yuh):
-- State availability based on the provided products list.
-- List up to 5 relevant products as "Examples you can explore in Yuh" (not recommendations).
-- If none match, say you can’t see matching items in the provided list.
-
-D) Optional follow-up: 0–2 questions, only if needed. Never ask about money amounts.
+Follow-up with questions that are relevant to the intent and leads to the display of yuh related products
 """
 
     if rewrite_hint:
