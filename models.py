@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 
 
+
 @dataclass
 class ClassificationResult:
     category: str
@@ -33,19 +34,23 @@ class GuardrailResult:
     severity: str = "none"  # "none" | "minor" | "fail"
     category: str = "none"  # "none" | "advice" | "instructions" | "prediction" | "recommendation_wording" | "risk_free_claim"
 
-
 @dataclass
 class ConversationState:
-    # Current main user goal (first message of a thread)
+    # Primary goal of the current thread (set on first user message)
     goal: str = ""
 
     # Last classification
     last_intent: Optional[str] = None
     last_confidence: Optional[float] = None
 
-    # Follow-up handling
+    # Follow-up state
     awaiting_followup: bool = False
     last_followup_question: Optional[str] = None
+    followup_answers: List[str] = None
+
+    def __post_init__(self):
+        if self.followup_answers is None:
+            self.followup_answers = []
 
 
 

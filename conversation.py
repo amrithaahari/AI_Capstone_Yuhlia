@@ -12,6 +12,10 @@ def reset_state(state: ConversationState) -> None:
     state.goal = ""
     state.last_intent = None
     state.last_confidence = None
+    state.awaiting_followup = False
+    state.last_followup_question = None
+    state.followup_answers = []
+
 
 
 def _is_overview_query(text: str) -> bool:
@@ -113,23 +117,48 @@ def process_user_message(message: str, state: ConversationState) -> ProcessingRe
     if not msg:
         return ProcessingResult(type="error", message="Please enter a message.")
 
-    state.goal = msg
-    generation_goal = state.goal  # always defined
+    # Always re-classify and re-filter every user turn.
+    # If we were awaiting a follow-up, we add context (original question + follow-up question + user answer),
+    # but we still run the full pipeline again.
+    awaiting_followup = bool(getattr(state, "awaiting_followup", False))
+    last_followup_q = getattr(state, "last_followup_question", None) or ""
+    original_goal = getattr(state, "goal", "") or ""
 
-    classification = classify_intent(state.goal, followup_answers=[])
+    if awaiting_followup and original_goal:
+        effective_query = (
+            f"ORIGINAL_QUESTION:\n{original_goal}\n\n"
+            f"ASSISTANT_FOLLOWUP_QUESTION:\n{last_followup_q}\n\n"
+            f"USER_ANSWER:\n{msg}\n"
+        )
+    else:
+        # New thread
+        state.goal = msg
+        if hasattr(state, "followup_answers"):
+            state.followup_answers = []
+        if hasattr(state, "last_followup_question"):
+            state.last_followup_question = None
+        if hasattr(state, "awaiting_followup"):
+            state.awaiting_followup = False
+        effective_query = msg
+
+    generation_goal = effective_query
+
+    classification = classify_intent(effective_query, followup_answers=[])
     state.last_intent = classification.category
     state.last_confidence = classification.confidence
 
     products: List[Product] = []
-
-    # Defaults so variables exist for all intents
     filters: Dict[str, Any] = {"notes": ""}
 
     if classification.category == Intent.yuh_related.value:
-        raw_filters = extract_filters(state.goal)
+        raw_filters = extract_filters(effective_query)
         filters = _validate_filters_llm(raw_filters)
 
-        is_overview = _is_overview_query(state.goal) or (filters.get("notes", "").lower() == "overview_query")
+        # Important: do NOT stay in overview mode when we're processing a follow-up answer
+        is_overview = (not awaiting_followup) and (
+            _is_overview_query(effective_query) or (filters.get("notes", "").lower() == "overview_query")
+        )
+
         if is_overview:
             overview = get_type_overview(limit_types=20)
             types = [t for (t, _) in overview]
@@ -137,7 +166,7 @@ def process_user_message(message: str, state: ConversationState) -> ProcessingRe
 
             overview_lines = [f"- {t} ({n})" for (t, n) in overview]
             catalog_overview_block = "CATALOG_TYPE_OVERVIEW (from yuh_products.db):\n" + "\n".join(overview_lines)
-            generation_goal = state.goal + "\n\n" + catalog_overview_block
+            generation_goal = effective_query + "\n\n" + catalog_overview_block
         else:
             has_structured = bool(
                 (filters.get("type_contains_all"))
@@ -156,7 +185,7 @@ def process_user_message(message: str, state: ConversationState) -> ProcessingRe
                     order_by_esg=bool(filters.get("order_by_esg")),
                 )
             else:
-                terms = [t for t in re.split(r"\W+", state.goal) if t]
+                terms = [t for t in re.split(r"\W+", effective_query) if t]
                 products = search_products(terms, top_k=TOP_K_PRODUCTS, type_whitelist=None)
 
         # Deterministic signal for the generator when no matches happened
@@ -168,7 +197,7 @@ def process_user_message(message: str, state: ConversationState) -> ProcessingRe
                   "(remove World, remove Special savings, relax ESG to include BBB, or remove TER cap)."
             )
 
-        # If extractor provided notes (e.g., exclusions are approximate), pass them through
+        # Pass extractor notes through for disclaimers (but ignore the overview marker)
         if filters.get("notes") and filters.get("notes").lower() not in {"overview_query"}:
             generation_goal = generation_goal + f"\n\nNOTES_FROM_FILTER_EXTRACTOR: {filters['notes']}"
 
@@ -181,7 +210,7 @@ def process_user_message(message: str, state: ConversationState) -> ProcessingRe
             generation_goal,
             classification.category,
             products=products,
-            followup_answers=[],
+            followup_answers=[],  # follow-up context is already embedded into effective_query
             rewrite_hint=rewrite_hint,
         )
         responses.append(raw_response)
@@ -190,6 +219,14 @@ def process_user_message(message: str, state: ConversationState) -> ProcessingRe
         last_guardrail = {"passed": gr.passed, "reason": gr.reason, "severity": gr.severity, "category": gr.category}
 
         if gr.passed:
+            # Update follow-up state based on whether the assistant ends with a question
+            text = (raw_response or "").strip()
+            last_line = text.splitlines()[-1].strip() if text else ""
+            asked_followup = last_line.endswith("?")
+
+            state.awaiting_followup = asked_followup
+            state.last_followup_question = last_line if asked_followup else None
+
             return ProcessingResult(
                 type="success",
                 message=raw_response,
@@ -206,6 +243,10 @@ def process_user_message(message: str, state: ConversationState) -> ProcessingRe
             "remove buy/sell/timing, remove predictions/guarantees, and avoid 'risk-free'."
         )
 
+    # Guardrail failure: do not keep follow-up mode on
+    state.awaiting_followup = False
+    state.last_followup_question = None
+
     return ProcessingResult(
         type="guardrail_failure",
         message="I can’t phrase that safely. Ask a factual question about investing concepts or what’s available in Yuh.",
@@ -216,3 +257,5 @@ def process_user_message(message: str, state: ConversationState) -> ProcessingRe
         responses=responses,
         guardrail=last_guardrail,
     )
+
+
