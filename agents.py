@@ -274,16 +274,17 @@ Intent:
 Product matches (internal grounding; do not name products in the response):
 {product_list}
 
-Write the response using this structure:
+* Answer the user’s question clearly.
+* If the product does not exist directly, explain the closest equivalent.
+* Structure the response as follows:
+1. Direct answer in the first sentence
+2. Short explanation clarifying terminology or equivalence
+3. Bullet points with key facts
+4. A brief limitations or caveats section
 
-Direct answer (1–2 sentences).
-- Must directly address the user's question.
-- If they ask about availability, answer at a high level (e.g. "Yuh offers ETFs, shares, and crypto in the Invest section").
-- Do not recommend, do not tell them what to do.
-
-Short explanation (2–6 bullets).
-- Explain the concept in simple terms.
-- If the user asks to exclude specific industries (e.g., defense/military), state that exclusions may be approximate because the catalog mainly supports filtering via ESG_score and general fields.
+* Avoid marketing language.
+* Avoid assumptions about the user’s goals.
+* Use simple examples where helpful.
 
 Table intro (1 sentence).
 - If products are provided OR the user asked about availability/options, include:
