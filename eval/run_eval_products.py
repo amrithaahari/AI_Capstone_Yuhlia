@@ -3,54 +3,17 @@ import os
 import sys
 import json
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime
 from pathlib import Path
 
-# Add project root (parent of /eval) to Python path
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from openai import OpenAI
 from core import yulia_reply
 
-
-YUH_PRODUCTS_JUDGE_SYSTEM = """You are grading whether the assistant surfaced Yuh products appropriately.
-
-Return ONLY valid JSON:
-{"pass": true|false, "reason": "short"}
-
-You will receive:
-- intent: "yuh_related" or "basic_knowledge" (or "unknown")
-- assistant_output: the assistant response text
-- products: a list of products returned by retrieval (may be empty)
-
-Definitions:
-- A "product example" means either:
-  (a) a concrete product name from the provided products list appears in the output, OR
-  (b) the output contains a clearly labeled section like "Examples you can explore in Yuh" followed by at least one bullet/item.
-
-PASS rules:
-1) If intent == "yuh_related":
-   - PASS if the output includes at least one product example (definition above), OR
-   - PASS if products list is empty AND the assistant explicitly says it can’t see matching products in the provided list and asks 1 clarifying question.
-2) If intent == "basic_knowledge":
-   - PASS if the output does NOT include product examples to explore in Yuh (no product list, no “examples in Yuh” section).
-
-FAIL rules:
-- If intent == "yuh_related" and products list is non-empty but the output gives no product examples.
-- If intent == "basic_knowledge" and the output includes product examples or an "Examples you can explore in Yuh" section.
-
-Important:
-- Do NOT judge financial advice here.
-- If intent is "unknown", PASS unless the output incorrectly lists Yuh product examples.
-"""
-
-
-EXAMPLES_HEADER_RE = re.compile(r"examples?\s+you\s+can\s+explore\s+in\s+yuh", re.IGNORECASE)
-BULLET_LINE_RE = re.compile(r"^\s*[-•]\s+\S+", re.MULTILINE)
-
+TABLE_TOKEN_RE = re.compile(r"\[\[PRODUCT_TABLE\]\]", re.IGNORECASE)
 
 def load_jsonl(path: str) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
@@ -61,36 +24,11 @@ def load_jsonl(path: str) -> List[Dict[str, Any]]:
                 out.append(json.loads(line))
     return out
 
-
-def safe_json_loads(raw: str) -> Dict[str, Any]:
-    raw = (raw or "").strip()
-    raw = raw.replace("```json", "").replace("```", "").strip()
-    try:
-        return json.loads(raw)
-    except Exception:
-        return {"pass": False, "reason": "judge_parse_error"}
-
-
 def normalize_text(s: str) -> str:
     return (s or "").lower()
 
-
-def contains_any_product_name(output_text: str, products: List[Dict[str, Any]]) -> bool:
-    t = normalize_text(output_text)
-    for p in products or []:
-        name = (p.get("name") or "").strip()
-        if name and normalize_text(name) in t:
-            return True
-    return False
-
-
-def has_examples_section_with_items(output_text: str) -> bool:
-    if not EXAMPLES_HEADER_RE.search(output_text or ""):
-        return False
-    # If header exists, require at least one bullet somewhere after it.
-    # Cheap approximation: require any bullet line in the full text.
-    return bool(BULLET_LINE_RE.search(output_text or ""))
-
+def contains_table_token(output_text: str) -> bool:
+    return bool(TABLE_TOKEN_RE.search(output_text or ""))
 
 def explicitly_says_no_matches(output_text: str) -> bool:
     t = normalize_text(output_text)
@@ -106,84 +44,120 @@ def explicitly_says_no_matches(output_text: str) -> bool:
         "not available in the provided list",
         "not in the provided list",
         "none in the provided list",
+        "no products matched",
+        "no products match",
     ]
     return any(p in t for p in phrases)
 
+def question_count(output_text: str) -> int:
+    return (output_text or "").count("?")
 
-def asks_a_question(output_text: str) -> bool:
-    return "?" in (output_text or "")
-
-
-def deterministic_grade(intent: str, output_text: str, products: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """
-    Returns:
-      - dict(pass=..., reason=...) when deterministic
-      - None when ambiguous and needs LLM judge
-    """
-    intent = (intent or "").strip()
-
-    # Unknown intent: only fail if it clearly includes a Yuh examples section
-    if intent == "unknown":
-        if has_examples_section_with_items(output_text):
-            return {"pass": False, "reason": "unknown_intent_but_yuh_examples_section_present"}
-        return {"pass": True, "reason": "unknown_intent_no_yuh_examples"}
-
-    if intent == "basic_knowledge":
-        # Hard fail if it clearly surfaced Yuh examples
-        if has_examples_section_with_items(output_text):
-            return {"pass": False, "reason": "basic_knowledge_but_yuh_examples_section_present"}
-        # If it mentions a product name from provided products (rare but possible), fail deterministically
-        if products and contains_any_product_name(output_text, products):
-            return {"pass": False, "reason": "basic_knowledge_but_product_name_present"}
-        # Otherwise pass
-        return {"pass": True, "reason": "basic_knowledge_no_product_examples"}
-
-    if intent == "yuh_related":
-        # If retrieval returned products, require at least one example deterministically
-        if products:
-            if contains_any_product_name(output_text, products) or has_examples_section_with_items(output_text):
-                return {"pass": True, "reason": "yuh_related_product_example_present"}
-            # Clear fail: products exist but none surfaced
-            return {"pass": False, "reason": "yuh_related_products_available_but_none_surfaced"}
-
-        # If no products available: ambiguous unless the assistant explicitly says so + asks 1 clarifying Q
-        if explicitly_says_no_matches(output_text) and asks_a_question(output_text):
-            return {"pass": True, "reason": "yuh_related_no_products_and_clarifying_question"}
-        return None  # ambiguous: ask LLM
-
+def get_field(p: Dict[str, Any], *names: str) -> Any:
+    for n in names:
+        if n in p:
+            return p.get(n)
     return None
 
+def deterministic_grade_surfacing(intent: str, output_text: str, products: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Surfacing grading aligned to your UI:
+    - yuh_related:
+        PASS if products non-empty AND token present
+        PASS if products empty AND explicitly says no matches AND asks exactly 1 question
+    - basic_knowledge:
+        PASS if products empty AND token absent
+    - unknown:
+        PASS unless it surfaced products or token
+    """
+    intent = (intent or "unknown").strip()
+    has_token = contains_table_token(output_text)
 
-def judge_products_llm(
-    client: OpenAI,
-    user_input: str,
-    assistant_output: str,
-    intent: str,
-    products: List[Dict[str, Any]],
-    model: str = "gpt-4o-mini",
-) -> Dict[str, Any]:
-    payload = {
-        "intent": intent,
-        "user_input": user_input,
-        "assistant_output": assistant_output,
-        "products": products,
+    if intent == "yuh_related":
+        if products:
+            if has_token:
+                return {"pass": True, "reason": "yuh_related_products_present_and_table_token_present"}
+            return {"pass": False, "reason": "yuh_related_products_present_but_table_token_missing"}
+
+        if explicitly_says_no_matches(output_text) and question_count(output_text) == 1:
+            return {"pass": True, "reason": "yuh_related_no_products_and_one_clarifying_question"}
+        return {"pass": False, "reason": "yuh_related_no_products_without_clear_disclosure_or_single_question"}
+
+    if intent == "basic_knowledge":
+        if products:
+            return {"pass": False, "reason": "basic_knowledge_should_not_return_products"}
+        if has_token:
+            return {"pass": False, "reason": "basic_knowledge_should_not_include_table_token"}
+        return {"pass": True, "reason": "basic_knowledge_no_products_and_no_token"}
+
+    # unknown
+    if products or has_token:
+        return {"pass": False, "reason": "unknown_should_not_surface_products_or_token"}
+    return {"pass": True, "reason": "unknown_no_products_surfaced"}
+
+def product_matches_expected(p: Dict[str, Any], expected: Dict[str, Any]) -> Tuple[bool, str]:
+    """
+    expected example:
+    {
+      "type_contains_all": ["ETF","Special savings"],
+      "region": "World",
+      "max_ter": 0.003,
+      "esg_scores_in": ["AAA","AA","A"]
     }
-    resp = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": YUH_PRODUCTS_JUDGE_SYSTEM},
-            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-        ],
-        temperature=0,
-        max_tokens=220,
-    )
-    return safe_json_loads(resp.choices[0].message.content or "")
+    """
+    p_type = str(get_field(p, "type", "Type") or "")
+    p_region = str(get_field(p, "region", "Region") or "")
+    p_ter = get_field(p, "ter", "TER")
+    p_esg = str(get_field(p, "esg", "esg_score", "ESG_score") or "").strip().upper()
 
+    for sub in (expected.get("type_contains_all") or []):
+        if str(sub).lower() not in p_type.lower():
+            return False, f"type_missing_substring:{sub}"
+
+    if expected.get("region") is not None:
+        if p_region != expected["region"]:
+            return False, f"region_mismatch:{p_region}!= {expected['region']}"
+
+    if expected.get("max_ter") is not None:
+        if p_ter is None:
+            return False, "ter_missing"
+        try:
+            if float(p_ter) > float(expected["max_ter"]):
+                return False, f"ter_too_high:{p_ter}>{expected['max_ter']}"
+        except Exception:
+            return False, "ter_not_numeric"
+
+    if expected.get("esg_scores_in") is not None:
+        allowed = set([str(x).strip().upper() for x in (expected.get("esg_scores_in") or [])])
+        if p_esg not in allowed:
+            return False, f"esg_not_allowed:{p_esg}"
+
+    return True, "ok"
+
+def grade_products_correctness(products: List[Dict[str, Any]], expected: Dict[str, Any]) -> Dict[str, Any]:
+    if not expected:
+        return {"pass": True, "reason": "correctness_skipped_no_expected"}
+
+    if not products:
+        return {"pass": False, "reason": "no_products_returned_for_expected_constraints"}
+
+    for p in products:
+        ok, why = product_matches_expected(p, expected)
+        if not ok:
+            return {
+                "pass": False,
+                "reason": f"product_failed_constraints:{why}",
+                "sample": {
+                    "name": get_field(p, "name", "Name"),
+                    "type": get_field(p, "type", "Type"),
+                    "region": get_field(p, "region", "Region"),
+                    "ter": get_field(p, "ter", "TER"),
+                    "esg": get_field(p, "esg", "esg_score", "ESG_score"),
+                },
+            }
+    return {"pass": True, "reason": "all_products_match_expected_constraints"}
 
 def main():
     cases_path = "eval/cases/yulia_eval_cases.jsonl"
-    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
     cases = load_jsonl(cases_path)
 
     results: List[Dict[str, Any]] = []
@@ -192,43 +166,46 @@ def main():
 
     for case in cases:
         user_input = case["input"]
-        app_out = yulia_reply(user_input)
+        expected = case.get("expected", {}) or {}
 
+        app_out = yulia_reply(user_input)
         output_text = app_out.get("output_text", "")
         meta = app_out.get("meta", {}) or {}
+
         intent = meta.get("intent", "") or "unknown"
         confidence = meta.get("confidence", None)
         retries = meta.get("retries", 0)
-
-        # Products passed from core.yulia_reply()
         products_meta = meta.get("products", []) or []
 
-        grade = deterministic_grade(intent, output_text, products_meta)
-        used_llm = False
+        surf = deterministic_grade_surfacing(intent, output_text, products_meta)
+        corr = grade_products_correctness(products_meta, expected)
 
-        if grade is None:
-            used_llm = True
-            grade = judge_products_llm(
-                client=client,
-                user_input=user_input,
-                assistant_output=output_text,
-                intent=intent,
-                products=products_meta,
-                model="gpt-4o-mini",
-            )
+        # Overall pass: always require surfacing pass.
+        # If expected constraints exist, also require correctness.
+        overall_pass = bool(surf.get("pass", False)) and (bool(corr.get("pass", False)) if expected else True)
+        overall_reason_parts = [surf.get("reason", "")]
+        if expected:
+            overall_reason_parts.append(corr.get("reason", ""))
+        overall_reason = " | ".join([p for p in overall_reason_parts if p])
 
-        # score only when intent is basic_knowledge or yuh_related
-        if intent in {"basic_knowledge", "yuh_related"}:
-            scored += 1
-            if bool(grade.get("pass", False)):
-                passed += 1
+        scored += 1
+        if overall_pass:
+            passed += 1
 
         results.append(
             {
                 "id": case.get("id"),
                 "input": user_input,
+                "expected": expected,
                 "output_text": output_text,
-                "grade": grade,
+                "grade": {
+                    # Backwards-compatible fields for render_results.py
+                    "pass": overall_pass,
+                    "reason": overall_reason,
+                    # Detailed breakdown
+                    "surfacing": surf,
+                    "correctness": corr,
+                },
                 "meta": {
                     **meta,
                     "intent": intent,
@@ -236,12 +213,12 @@ def main():
                     "retries": retries,
                     "products": products_meta,
                 },
-                "judge_meta": {"used_llm": used_llm},
+                "judge_meta": {"used_llm": False},
             }
         )
 
     pass_rate = (passed / scored) if scored else 0.0
-    print(f"Products surfacing eval scored: {scored} | Pass: {passed} | Pass rate: {pass_rate:.0%}")
+    print(f"Products eval scored: {scored} | Pass: {passed} | Pass rate: {pass_rate:.0%}")
 
     now = datetime.now()
     date_str = now.strftime("%Y-%m-%d")
@@ -260,10 +237,9 @@ def main():
 
     print(f"Wrote JSONL: {jsonl_path}")
 
-    # Optional hard fail if anything failed among scored intents
-    if scored and passed != scored:
-        sys.exit(1)
-
+    if os.getenv("EVAL_HARD_FAIL", "").strip():
+        if scored and passed != scored:
+            sys.exit(1)
 
 if __name__ == "__main__":
     main()

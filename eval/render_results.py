@@ -1,11 +1,4 @@
 # eval/render_results.py
-# Usage:
-#   python eval/render_results.py --context eval/output/result_context.jsonl --products eval/output/result_products.jsonl --out eval/output/report.html
-#
-# Renders a single HTML report with 2 tabs:
-# - Context eval
-# - Yuh products eval
-
 import argparse
 import json
 from pathlib import Path
@@ -231,12 +224,11 @@ pre{
   .col-retries{display:none}
 }
 """
-
 JS = """
 function applyFilters(panelId){
   const panel = document.getElementById(panelId);
   const q = panel.querySelector(".search").value.toLowerCase();
-  const f = panel.querySelector(".filter").value; // all|pass|fail
+  const f = panel.querySelector(".filter").value;
   const rows = panel.querySelectorAll("tbody tr[data-row='main']");
   let shown = 0;
 
@@ -266,6 +258,7 @@ function openModalFromRow(row){
   document.getElementById("m_intent").innerText = data.intent || "";
   document.getElementById("m_conf").innerText = data.confidence || "";
   document.getElementById("m_retries").innerText = data.retries || "";
+  document.getElementById("m_products").innerText = data.products || "";
 
   document.getElementById("overlay").style.display = "flex";
 }
@@ -333,17 +326,47 @@ def pill_html(is_pass: bool) -> str:
 def get_grade(item: dict) -> dict:
     return item.get("grade", {}) or {}
 
+def get_pass_and_reason(item: dict) -> tuple[bool, str]:
+    g = get_grade(item)
+    # Preferred (new) format
+    if "pass" in g:
+        return bool(g.get("pass", False)), str(g.get("reason", "") or "")
+    # Backward fallback: overall_pass / reason
+    if "overall_pass" in g:
+        return bool(g.get("overall_pass", False)), str(g.get("reason", "") or "")
+    # Nested fallback (older experimental format)
+    if "surfacing" in g and isinstance(g["surfacing"], dict):
+        sp = bool(g["surfacing"].get("pass", False))
+        rs = str(g["surfacing"].get("reason", "") or "")
+        return sp, rs
+    return False, ""
+
 def summarize(items: list) -> dict:
     total = len(items)
     passed = 0
     for r in items:
-        g = get_grade(r)
-        is_pass = bool(g.get("pass", False)) or bool(g.get("overall_pass", False))
+        is_pass, _ = get_pass_and_reason(r)
         if is_pass:
             passed += 1
     failed = total - passed
     pass_rate = (passed / total * 100) if total else 0.0
     return {"total": total, "passed": passed, "failed": failed, "pass_rate": pass_rate}
+
+def format_products_preview(meta_products: list, limit: int = 12) -> str:
+    if not meta_products:
+        return "(none)"
+    lines = []
+    for p in meta_products[:limit]:
+        name = p.get("name") or p.get("Name") or ""
+        ptype = p.get("type") or p.get("Type") or ""
+        region = p.get("region") or p.get("Region") or ""
+        ter = p.get("ter") if "ter" in p else p.get("TER")
+        esg = p.get("esg") or p.get("esg_score") or p.get("ESG_score") or ""
+        ter_s = "" if ter is None else str(ter)
+        lines.append(f"- {name} | {ptype} | {region} | TER={ter_s} | ESG={esg}")
+    if len(meta_products) > limit:
+        lines.append(f"... ({len(meta_products) - limit} more)")
+    return "\n".join(lines)
 
 def build_rows_html(items: list) -> str:
     rows_html = []
@@ -365,9 +388,10 @@ def build_rows_html(items: list) -> str:
             conf_val = None
         conf_str = f"{conf_val:.2f}" if conf_val is not None else ""
 
-        grade = get_grade(r)
-        is_pass = bool(grade.get("pass", False)) or bool(grade.get("overall_pass", False))
-        reason = grade.get("reason", "") or ""
+        is_pass, reason = get_pass_and_reason(r)
+
+        # Product preview for modal
+        products_preview = format_products_preview(meta.get("products", []) or [])
 
         search_blob = f"{case_id} {intent} {conf_str} {retries} {inp} {reason}"
 
@@ -380,6 +404,7 @@ def build_rows_html(items: list) -> str:
             "intent": str(intent),
             "confidence": conf_str,
             "retries": str(retries),
+            "products": products_preview,
         }
 
         rows_html.append(f"""
@@ -453,7 +478,6 @@ def main():
 
     context_path = Path(args.context)
     products_path = Path(args.products)
-
     out_path = Path(args.out) if args.out else context_path.with_suffix(".html")
 
     context_items = load_jsonl(context_path)
@@ -512,10 +536,17 @@ def main():
 Confidence: <span id="m_conf"></span>
 Retries: <span id="m_retries"></span></pre>
         </div>
+
         <div class="block" style="margin-bottom:12px">
           <h4>Reason</h4>
           <pre id="m_reason"></pre>
         </div>
+
+        <div class="block" style="margin-bottom:12px">
+          <h4>Products (table payload)</h4>
+          <pre id="m_products"></pre>
+        </div>
+
         <div class="modalGrid">
           <div class="block">
             <h4>Input</h4>
