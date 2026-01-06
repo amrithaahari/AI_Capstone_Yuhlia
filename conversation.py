@@ -4,8 +4,10 @@ from typing import List, Optional, Dict, Any
 
 from agents import classify_intent, generate_response, check_guardrails, extract_filters
 from config import MAX_GUARDRAIL_RETRIES, Intent, TOP_K_PRODUCTS
-from database import search_products, search_products_filtered, get_type_overview, get_sample_products_for_types
+from database import search_products, search_products_filtered, get_type_overview, get_sample_products_for_types, search_products_by_ids
 from models import ConversationState, ProcessingResult, Product
+from rag.retrieve import rag_candidates
+
 
 
 def reset_state(state: ConversationState) -> None:
@@ -185,8 +187,14 @@ def process_user_message(message: str, state: ConversationState) -> ProcessingRe
                     order_by_esg=bool(filters.get("order_by_esg")),
                 )
             else:
-                terms = [t for t in re.split(r"\W+", effective_query) if t]
-                products = search_products(terms, top_k=TOP_K_PRODUCTS, type_whitelist=None)
+                # RAG fallback for fuzzy / values-based queries
+                candidate_ids = rag_candidates(effective_query, top_n=80)
+
+                products = search_products_by_ids(
+                    candidate_ids=candidate_ids,
+                    filters=filters,
+                    top_k=TOP_K_PRODUCTS,
+                )
 
         # Deterministic signal for the generator when no matches happened
         if len(products) == 0:

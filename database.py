@@ -265,3 +265,64 @@ def get_sample_products_for_types(types: List[str], per_type: int = 2) -> List[P
                 out.append(b[i])
 
     return out
+
+
+def search_products_by_ids(
+    candidate_ids: list[int],
+    filters: dict,
+    top_k: int,
+) -> list[Product]:
+    if not candidate_ids:
+        return []
+
+    conn = sqlite3.connect(DATABASE_NAME, check_same_thread=False)
+    cur = conn.cursor()
+
+    where = ["product_ID IN ({})".format(",".join("?" * len(candidate_ids)))]
+    params = list(candidate_ids)
+
+    for sub in (filters.get("type_contains_all") or []):
+        where.append("LOWER(Type) LIKE LOWER(?)")
+        params.append(f"%{sub}%")
+
+    if filters.get("region"):
+        where.append("Region = ?")
+        params.append(filters["region"])
+
+    if filters.get("max_ter") is not None:
+        where.append("TER IS NOT NULL AND TER <= ?")
+        params.append(float(filters["max_ter"]))
+
+    if filters.get("esg_scores_in"):
+        placeholders = ",".join("?" * len(filters["esg_scores_in"]))
+        where.append(f"ESG_score IN ({placeholders})")
+        params.extend(filters["esg_scores_in"])
+
+    sql = f"""
+    SELECT product_ID, Name, Description, Sector, Currency, Region, ESG_score, TER, Type
+    FROM products
+    WHERE {" AND ".join(where)}
+    """
+
+    cur.execute(sql, params)
+    rows = cur.fetchall()
+    conn.close()
+
+    # Preserve RAG ranking
+    id_rank = {pid: i for i, pid in enumerate(candidate_ids)}
+    rows.sort(key=lambda r: id_rank.get(r[0], 10**9))
+
+    return [
+        Product(
+            id=r[0],
+            name=r[1],
+            description=r[2],
+            sector=r[3],
+            currency=r[4],
+            region=r[5],
+            esg=r[6],
+            ter=r[7],
+            type=r[8],
+        )
+        for r in rows[:top_k]
+    ]
