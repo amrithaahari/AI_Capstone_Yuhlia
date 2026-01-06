@@ -1,14 +1,14 @@
 # conversation.py
 import re
-from typing import List, Optional, Dict, Any
+from typing import List, Dict, Any
 
 from agents import classify_intent, generate_response, check_guardrails, extract_filters
 from config import MAX_GUARDRAIL_RETRIES, Intent, TOP_K_PRODUCTS
-from database import search_products, search_products_filtered, get_type_overview, get_sample_products_for_types, search_products_by_ids
+from database import search_products_filtered, get_type_overview, get_sample_products_for_types, search_products_by_ids
 from models import ConversationState, ProcessingResult, Product
-from rag.retrieve import rag_candidates
+from rag.retrieve import rag_candidates, rag_web_snippets
 
-
+TABLE_TOKEN_RE = re.compile(r"\[\[\s*PRODUCT_TABLE\s*\]\]", re.IGNORECASE)
 
 def reset_state(state: ConversationState) -> None:
     state.goal = ""
@@ -113,6 +113,23 @@ def _validate_filters_llm(raw: Dict[str, Any]) -> dict:
         "notes": notes,
     }
 
+def enforce_table_token_contract(output_text: str, intent: str, products: List[Product]) -> str:
+    """
+    Deterministic contract:
+    - Non-yuh_related: token must not appear
+    - yuh_related + products: token must appear
+    - yuh_related + no products: token must not appear
+    """
+    text = (output_text or "").strip()
+
+    # Remove any token variants first (idempotent)
+    text = TABLE_TOKEN_RE.sub("", text).strip()
+
+    if intent == Intent.yuh_related.value and products:
+        # Ensure token on its own line at the end
+        text = text.rstrip() + "\n\n[[PRODUCT_TABLE]]"
+
+    return text
 
 def process_user_message(message: str, state: ConversationState) -> ProcessingResult:
     msg = (message or "").strip()
@@ -148,6 +165,19 @@ def process_user_message(message: str, state: ConversationState) -> ProcessingRe
     classification = classify_intent(effective_query, followup_answers=[])
     state.last_intent = classification.category
     state.last_confidence = classification.confidence
+
+    # --- Website RAG grounding (narrative only) ---
+    use_web_rag = (classification.category != Intent.yuh_related.value)
+
+    if use_web_rag:
+        snippets = rag_web_snippets(state.goal, top_n=6)
+
+        if snippets:
+            web_block = "YUH_WEBSITE_GROUNDING (from yuh.com Invest section):\n"
+            for s in snippets:
+                web_block += f"- Source: {s['url']}\n  {s['text']}\n\n"
+
+            generation_goal = generation_goal + "\n\n" + web_block
 
     products: List[Product] = []
     filters: Dict[str, Any] = {"notes": ""}
@@ -227,13 +257,21 @@ def process_user_message(message: str, state: ConversationState) -> ProcessingRe
         last_guardrail = {"passed": gr.passed, "reason": gr.reason, "severity": gr.severity, "category": gr.category}
 
         if gr.passed:
-            # Update follow-up state based on whether the assistant ends with a question
-            text = (raw_response or "").strip()
+            enforced = enforce_table_token_contract(raw_response, classification.category, products)
+            text = (enforced or "").strip()
             last_line = text.splitlines()[-1].strip() if text else ""
             asked_followup = last_line.endswith("?")
 
             state.awaiting_followup = asked_followup
             state.last_followup_question = last_line if asked_followup else None
+
+            if classification.category != Intent.yuh_related.value:
+                assert len(products) == 0, "Non-yuh intent must not return products"
+                assert TABLE_TOKEN_RE.search(enforced) is None, "Non-yuh intent must not include PRODUCT_TABLE token"
+            if TABLE_TOKEN_RE.search(enforced):
+                assert len(products) > 0, "PRODUCT_TABLE token present but products are empty"
+            if classification.category == Intent.yuh_related.value and len(products) > 0:
+                assert TABLE_TOKEN_RE.search(enforced), "yuh_related with products must include PRODUCT_TABLE token"
 
             return ProcessingResult(
                 type="success",

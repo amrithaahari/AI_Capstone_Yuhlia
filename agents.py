@@ -4,10 +4,8 @@ import os
 import re
 from typing import List, Optional, Dict, Any
 
-from config import Intent
-from config import LLM_ENABLED
+from config import Intent, LLM_ENABLED
 from models import ClassificationResult, GuardrailResult, Product
-
 
 # -------------------------
 # OpenAI client helpers
@@ -219,8 +217,12 @@ def generate_response(
     if not LLM_ENABLED:
         return _offline_fallback_response(goal, intent)
 
-    user_asked_availability = _user_asked_availability_or_options(goal)
-    should_use_products = (intent == Intent.yuh_related.value) or user_asked_availability
+    # Only yuh_related is allowed to surface products or the table token
+    products_allowed = (intent == Intent.yuh_related.value)
+    has_products = bool(products_allowed and products)
+
+    # user_asked_availability = _user_asked_availability_or_options(goal)
+    # should_use_products = (intent == Intent.yuh_related.value) or user_asked_availability
 
     system_prompt = """You are Yulia, an investing discovery assistant inside the Yuh app.
 
@@ -233,6 +235,8 @@ When describing "investment options on yuh", only use these high-level categorie
 - Digital assets / crypto
 - Trending themes
 - Bonds
+- 3A for retirement or long-term investing in Switzerland
+- Commission free ETFs
 Do NOT introduce categories like "funds" unless the user explicitly mentions "funds".
 
 IMPORTANT UI RULES:
@@ -256,7 +260,7 @@ Style:
 Hard bans: "you should", "I recommend", "buy", "sell", "invest in X", "guaranteed", "risk-free", "start by", "the next step is".
 """
 
-    product_list = _format_products(products, limit=40) if should_use_products else "- (Not provided for this intent)"
+    product_list = _format_products(products, limit=40) if products_allowed else "- (Not provided for this intent)"
 
     # If we are processing a follow-up answer, include it explicitly
     followup_block = ""
@@ -274,27 +278,30 @@ Intent:
 Product matches (internal grounding; do not name products in the response):
 {product_list}
 
-* Answer the user’s question clearly.
-* If the product does not exist directly, explain the closest equivalent.
-* Structure the response as follows:
-1. Direct answer in the first sentence
-2. Short explanation clarifying terminology or equivalence
-3. Bullet points with key facts
-4. A brief limitations or caveats section
+Response requirements:
+- Answer the user’s question clearly.
+- If the requested product does not exist directly, explain the closest equivalent at a category level.
+- Structure:
+  1) Direct answer in the first sentence
+  2) Short explanation clarifying terminology or equivalence
+  3) Bullet points with key facts
+  4) Brief limitations or caveats
 
-* Avoid marketing language.
-* Avoid assumptions about the user’s goals.
-* Use simple examples where helpful.
 
-Table intro (1 sentence).
-- If products are provided OR the user asked about availability/options, include:
-"Here are some of our <relevant product category> listed in the table below. Please note that these are just for your information and in no way or form are advice or recommendations:"
-- Then output this token on its own line:
-[[PRODUCT_TABLE]]
-- Do NOT output any table content.
+Product table token rules (STRICT):
+- Never invent products.
+- Never output any table content.
+- Only if intent is "yuh_related" AND products list is non-empty:
+  - Include this exact 1-sentence intro:
+    "Here are some of our relevant products listed in the table below. Please note that these are just for your information and in no way or form are advice or recommendations:"
+  - Then output this token on its own line:
+    [[PRODUCT_TABLE]]
+- Otherwise:
+  - Do NOT mention a table
+  - Do NOT output the token
 
-Optional follow-up question(s) (0–1 question).
-- Only if needed to proceed and should be related to investment products at yuh.
+Optional follow-up question (0 or 1):
+- Only if needed to proceed and must be related to products at yuh.
 - Never ask about amounts, expected returns, or timing.
 
 {rewrite_hint}

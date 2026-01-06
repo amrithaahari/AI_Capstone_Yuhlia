@@ -1,5 +1,6 @@
 # ui_components.py
 import streamlit as st
+import re
 import pandas as pd
 from typing import Optional
 
@@ -81,22 +82,19 @@ def render_products_table(products: list[Product]) -> None:
     )
 
 def render_assistant_message_with_table(message: str, products: Optional[list[Product]]) -> None:
-    TOKENS = ("[[PRODUCT_TABLE]]")
+    TABLE_TOKEN_RE = re.compile(r"\[\[\s*PRODUCT_TABLE\s*\]\]|\[\s*PRODUCT_TABLE\s*\]", re.IGNORECASE)
     msg = (message or "").strip()
 
     token_found = None
-    for tok in TOKENS:
-        if tok in msg:
-            token_found = tok
-            break
+    token_found = TABLE_TOKEN_RE.search(msg or "")
+    token_found = token_found.group(0) if token_found else None
 
     if token_found and products:
-        before, after = msg.split(token_found, 1)
-        if before.strip():
-            st.markdown(before.strip())
+        # Remove token from the displayed text to avoid breaking markdown lists/bold text
+        cleaned = TABLE_TOKEN_RE.sub("", msg or "")
+        if cleaned.strip():
+            st.markdown(cleaned)
         render_products_table(products)
-        if after.strip():
-            st.markdown(after.strip())
         return
 
     # fallback
