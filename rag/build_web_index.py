@@ -45,6 +45,7 @@ URLS = [
     "https://www.yuh.com/en/app/invest/etf-partner-xtrackers/",
     "https://www.yuh.com/en/app/invest/etf-partner-xtrackers/",
     "https://www.yuh.com/en/app/invest/etf-partner-xtrackers/",
+    "https://www.moneyland.ch/en/savings-plan-etf-mutual-fund-guide",
 ]
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))

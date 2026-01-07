@@ -7,6 +7,14 @@ from typing import List, Optional, Dict, Any
 from config import Intent, LLM_ENABLED
 from models import ClassificationResult, GuardrailResult, Product
 
+DEFAULT_GEN_MODEL = "gpt-4o-mini"
+
+NO_TEMPERATURE_MODELS = {
+    "gpt-5.2",
+    "gpt-5-mini",
+}
+
+
 # -------------------------
 # OpenAI client helpers
 # -------------------------
@@ -14,17 +22,54 @@ def _get_openai_client():
     from openai import OpenAI
     return OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-def fetch_openai_response(user_prompt: str, system_prompt: str, model: str = "gpt-4o-mini") -> str:
+def fetch_openai_response(
+    user_prompt: str,
+    system_prompt: str,
+    model: Optional[str] = None,
+    temperature: float = 0.2,
+    max_tokens: int = 500,
+) -> str:
+    """
+    Unified OpenAI call wrapper.
+
+    Compatibility rules:
+    - GPT-5 family:
+        * does NOT accept temperature
+        * does NOT accept max_tokens
+        * requires max_completion_tokens
+    - GPT-4.x / GPT-4o:
+        * accepts temperature
+        * accepts max_tokens
+    """
     client = _get_openai_client()
-    resp = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        temperature=0.2,
-    )
-    return resp.choices[0].message.content or ""
+
+    default_model = os.getenv("YULIA_GEN_MODEL", "gpt-4o-mini")
+    chosen_model = (model or default_model).strip()
+
+    messages = [
+        {"role": "system", "content": system_prompt or ""},
+        {"role": "user", "content": user_prompt or ""},
+    ]
+
+    is_gpt5 = chosen_model.startswith("gpt-5")
+
+    kwargs = {
+        "model": chosen_model,
+        "messages": messages,
+    }
+
+    if is_gpt5:
+        # GPT-5 models have a restricted parameter surface
+        kwargs["max_completion_tokens"] = int(max_tokens)
+    else:
+        kwargs["temperature"] = float(temperature)
+        kwargs["max_tokens"] = int(max_tokens)
+
+    resp = client.chat.completions.create(**kwargs)
+
+    return (resp.choices[0].message.content or "").strip()
+
+
 
 def _strip_code_fences(text: str) -> str:
     t = (text or "").strip()
@@ -182,9 +227,27 @@ def extract_filters(goal: str) -> Dict[str, Any]:
     if not LLM_ENABLED:
         return {}
 
+    schema = (
+        "Return ONLY valid JSON (no prose, no markdown, no code fences) with exactly these keys:\n"
+        '{\n'
+        '  "type_contains_all": [string],\n'
+        '  "region": string or null,\n'
+        '  "max_ter": number or null,\n'
+        '  "esg_scores_in": [string]\n'
+        '}\n'
+        "Rules:\n"
+        "- If unknown, use null or []\n"
+        "- Keep lists short\n"
+    )
+
+    prompt = f"USER_MESSAGE:\n{goal}\n\n{schema}"
+
+    # Keep this small; filters should never need a large completion.
     raw = fetch_openai_response(
-        user_prompt=f"USER_MESSAGE:\n{goal}\n\nReturn JSON only.",
+        user_prompt=prompt,
         system_prompt=_FILTER_EXTRACTOR_SYSTEM_PROMPT,
+        temperature=0.0,
+        max_tokens=220,
     )
     raw = _strip_code_fences(raw)
 
@@ -192,7 +255,24 @@ def extract_filters(goal: str) -> Dict[str, Any]:
         data = json.loads(raw)
         return data if isinstance(data, dict) else {}
     except Exception:
-        return {}
+        # One repair attempt; still same model.
+        repair_prompt = (
+            "Fix the following into valid JSON ONLY (no prose, no markdown). "
+            "Output must match the schema exactly.\n\n"
+            f"BAD_OUTPUT:\n{raw}\n\n{schema}"
+        )
+        raw2 = fetch_openai_response(
+            user_prompt=repair_prompt,
+            system_prompt=_FILTER_EXTRACTOR_SYSTEM_PROMPT,
+            temperature=0.0,
+            max_tokens=220,
+        )
+        raw2 = _strip_code_fences(raw2)
+        try:
+            data2 = json.loads(raw2)
+            return data2 if isinstance(data2, dict) else {}
+        except Exception:
+            return {}
 
 
 # -------------------------
