@@ -14,6 +14,54 @@ NO_TEMPERATURE_MODELS = {
     "gpt-5-mini",
 }
 
+# -------------------------
+# Usage tracking (cost)
+# -------------------------
+# Aggregates OpenAI usage for one "request" (one yulia_reply call).
+# eval_models.py will price this using MODEL_PRICES_PER_1M.
+_USAGE = {
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "total_tokens": 0,
+    "calls": 0,
+    "by_model": {},  # model -> same fields
+}
+
+def usage_reset() -> None:
+    _USAGE["input_tokens"] = 0
+    _USAGE["output_tokens"] = 0
+    _USAGE["total_tokens"] = 0
+    _USAGE["calls"] = 0
+    _USAGE["by_model"] = {}
+
+def usage_get() -> Dict[str, Any]:
+    # return a shallow copy so callers don't mutate global state accidentally
+    return {
+        "input_tokens": _USAGE["input_tokens"],
+        "output_tokens": _USAGE["output_tokens"],
+        "total_tokens": _USAGE["total_tokens"],
+        "calls": _USAGE["calls"],
+        "by_model": dict(_USAGE["by_model"]),
+    }
+
+def _usage_add(model: str, input_tokens: int, output_tokens: int, total_tokens: int) -> None:
+    _USAGE["input_tokens"] += int(input_tokens)
+    _USAGE["output_tokens"] += int(output_tokens)
+    _USAGE["total_tokens"] += int(total_tokens)
+    _USAGE["calls"] += 1
+
+    m = (model or "unknown").strip()
+    bm = _USAGE["by_model"].setdefault(m, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "calls": 0})
+    bm["input_tokens"] += int(input_tokens)
+    bm["output_tokens"] += int(output_tokens)
+    bm["total_tokens"] += int(total_tokens)
+    bm["calls"] += 1
+
+def record_usage(model: str, input_tokens: int, output_tokens: int = 0, total_tokens: Optional[int] = None) -> None:
+    # for embeddings (output_tokens=0); total_tokens is usually equal to input_tokens
+    if total_tokens is None:
+        total_tokens = int(input_tokens) + int(output_tokens)
+    _usage_add(model, int(input_tokens), int(output_tokens), int(total_tokens))
 
 # -------------------------
 # OpenAI client helpers
@@ -66,6 +114,25 @@ def fetch_openai_response(
         kwargs["max_tokens"] = int(max_tokens)
 
     resp = client.chat.completions.create(**kwargs)
+    # ---- record token usage for cost ----
+    try:
+        usage = getattr(resp, "usage", None)
+        in_tok = int(getattr(usage, "prompt_tokens", 0) or 0) if usage is not None else 0
+        out_tok = int(getattr(usage, "completion_tokens", 0) or 0) if usage is not None else 0
+        total_tok = int(getattr(usage, "total_tokens", 0) or 0) if usage is not None else (in_tok + out_tok)
+
+        # Some SDKs/models also expose input_tokens/output_tokens
+        if usage is not None and in_tok == 0 and hasattr(usage, "input_tokens"):
+            in_tok = int(getattr(usage, "input_tokens", 0) or 0)
+        if usage is not None and out_tok == 0 and hasattr(usage, "output_tokens"):
+            out_tok = int(getattr(usage, "output_tokens", 0) or 0)
+        if total_tok == 0:
+            total_tok = in_tok + out_tok
+
+        _usage_add(chosen_model, in_tok, out_tok, total_tok)
+    except Exception:
+        pass
+
 
     return (resp.choices[0].message.content or "").strip()
 

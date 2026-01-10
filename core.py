@@ -1,6 +1,7 @@
 
 from typing import Any, Dict, List
 
+from agents import usage_reset, usage_get
 from models import ConversationState, Product
 from conversation import process_user_message  # your orchestrator
 
@@ -31,7 +32,11 @@ def yulia_reply(user_input: str) -> Dict[str, Any]:
     }
     """
     state = ConversationState()
+    usage_reset()
+
+
     result = process_user_message(user_input, state)
+
 
     products = result.products or []
     meta = {
@@ -41,7 +46,7 @@ def yulia_reply(user_input: str) -> Dict[str, Any]:
         "products": _products_to_meta(products),
         "type": result.type,
     }
-
+    meta["usage"] = usage_get()
     return {
         "output_text": result.message,
         "meta": meta,

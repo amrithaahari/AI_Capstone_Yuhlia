@@ -11,10 +11,23 @@ COLLECTION_NAME = "yuh_products"
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 def embed(text: str):
-    return client.embeddings.create(
+    resp = client.embeddings.create(
         model="text-embedding-3-small",
         input=text
-    ).data[0].embedding
+    )
+
+    # record embedding usage for cost (input only)
+    try:
+        from agents import record_usage
+        usage = getattr(resp, "usage", None)
+        total = int(getattr(usage, "total_tokens", 0) or 0) if usage is not None else 0
+        if total:
+            record_usage("text-embedding-3-small", input_tokens=total, output_tokens=0, total_tokens=total)
+    except Exception:
+        pass
+
+    return resp.data[0].embedding
+
 
 
 def rag_candidates(query: str, top_n: int = 80) -> list[int]:

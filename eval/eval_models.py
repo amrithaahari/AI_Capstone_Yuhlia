@@ -2,12 +2,10 @@
 import os
 import sys
 import json
-import time
 import argparse
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-
 
 # Add project root (parent of /eval) to Python path
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -17,13 +15,11 @@ if PROJECT_ROOT not in sys.path:
 from openai import OpenAI
 from core import yulia_reply
 
-# Import judges from your existing evals (adjust module paths if needed)
 from eval.run_eval import judge as context_judge
 from eval.run_eval_products import (
     deterministic_grade_surfacing,
     grade_products_correctness,
 )
-
 
 # Official pricing (Priority tier) per 1M tokens
 # Source: https://platform.openai.com/docs/pricing
@@ -33,10 +29,9 @@ MODEL_PRICES_PER_1M = {
     "gpt-4o-mini": {"input": 0.25, "output": 1.00},
     "gpt-4.1": {"input": 3.50, "output": 14.00},
 }
-
-DEFAULT_MODELS = ["gpt-5.2", "gpt-5-mini"]
-
- # "gpt-5-mini", "gpt-4o-mini", "gpt-4.1"]
+EMBED_PRICES_PER_1M = {
+    "text-embedding-3-small": {"input": 0.02, "output": 0.0},
+}
 
 
 def load_jsonl(path: str) -> List[Dict[str, Any]]:
@@ -49,13 +44,6 @@ def load_jsonl(path: str) -> List[Dict[str, Any]]:
     return out
 
 
-def estimate_cost_usd(model: str, input_tokens: int, output_tokens: int) -> Optional[float]:
-    p = MODEL_PRICES_PER_1M.get(model)
-    if not p:
-        return None
-    return (input_tokens / 1_000_000.0) * p["input"] + (output_tokens / 1_000_000.0) * p["output"]
-
-
 def safe_int(x: Any) -> int:
     try:
         return int(x)
@@ -63,28 +51,67 @@ def safe_int(x: Any) -> int:
         return 0
 
 
-def main():
-    cases_path = "eval/cases/yulia_eval_cases.jsonl"
-    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+def estimate_cost_usd(model: str, input_tokens: int, output_tokens: int) -> Optional[float]:
+    p = MODEL_PRICES_PER_1M.get(model) or EMBED_PRICES_PER_1M.get(model)
+    if not p:
+        return None
+    return (input_tokens / 1_000_000.0) * p["input"] + (output_tokens / 1_000_000.0) * p["output"]
 
+
+def compute_case_cost_from_usage(usage: Dict[str, Any], fallback_model: str) -> Dict[str, Any]:
+    """
+    Returns:
+      {
+        "est_cost_usd": float,
+        "by_model": {model: float},
+        "tokens": {"input": int, "output": int, "total": int}
+      }
+    """
+    usage = usage or {}
+    in_tok = safe_int(usage.get("input_tokens"))
+    out_tok = safe_int(usage.get("output_tokens"))
+    total_tok = safe_int(usage.get("total_tokens"))
+
+    by_model_usage = usage.get("by_model", {}) or {}
+    by_model_cost: Dict[str, float] = {}
+    total_cost = 0.0
+
+    if by_model_usage:
+        for m, u in by_model_usage.items():
+            mi = safe_int(u.get("input_tokens"))
+            mo = safe_int(u.get("output_tokens"))
+            c = estimate_cost_usd(m, mi, mo)
+            if c is None:
+                continue
+            by_model_cost[m] = float(c)
+            total_cost += float(c)
+    else:
+        c = estimate_cost_usd(fallback_model, in_tok, out_tok)
+        if c is not None:
+            total_cost += float(c)
+            by_model_cost[fallback_model] = float(c)
+
+    return {
+        "est_cost_usd": float(total_cost),
+        "by_model": by_model_cost,
+        "tokens": {"input": in_tok, "output": out_tok, "total": total_tok},
+    }
+
+
+def main():
+    # Make default cases path stable regardless of current working directory
+    cases_path = os.path.join(PROJECT_ROOT, "eval", "cases", "yulia_eval_cases.jsonl")
+
+    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
     cases = load_jsonl(cases_path)
 
-    # Models you want to compare (must be valid for your account)
     models_to_test = [
         "gpt-5.2",
-        "gpt-5-mini",
         "gpt-4o-mini",
         "gpt-4.1",
     ]
 
-    # Reuse judge logic from existing scripts
-    from eval.run_eval import judge as judge_context  # run_eval.py has judge() :contentReference[oaicite:2]{index=2}
-    from eval.run_eval_products import (
-        deterministic_grade_surfacing,
-        grade_products_correctness,
-    )
-
-    out_dir = Path("eval/output")
+    out_dir = Path(os.path.join(PROJECT_ROOT, "eval", "output"))
     out_dir.mkdir(parents=True, exist_ok=True)
 
     now = datetime.now()
@@ -92,7 +119,6 @@ def main():
     time_str = now.strftime("%H%M%S")
 
     for model in models_to_test:
-        # Force whole app to use this model (your constraint)
         os.environ["YULIA_GEN_MODEL"] = model
 
         context_results = []
@@ -100,6 +126,10 @@ def main():
 
         ctx_passed = 0
         prod_passed = 0
+
+        total_app_input_tokens = 0
+        total_app_output_tokens = 0
+        total_app_cost_usd = 0.0
 
         for case in cases:
             user_input = case["input"]
@@ -109,8 +139,19 @@ def main():
             output_text = app_out.get("output_text", "")
             meta = app_out.get("meta", {}) or {}
 
-            # ---------- Context eval: identical schema to run_eval.py ----------
-            ctx_grade = judge_context(client, user_input, output_text, "gpt-4o-mini")
+            # ---- cost per case (stored into outputs) ----
+            usage = meta.get("usage", {}) or {}
+            cost_obj = compute_case_cost_from_usage(usage, fallback_model=model)
+
+            # These are the fields your renderers can rely on
+            meta["cost"] = cost_obj  # <--- FIX: write cost into outputs
+
+            total_app_input_tokens += cost_obj["tokens"]["input"]
+            total_app_output_tokens += cost_obj["tokens"]["output"]
+            total_app_cost_usd += float(cost_obj["est_cost_usd"])
+
+            # ---------- Context eval ----------
+            ctx_grade = context_judge(client, user_input, output_text, "gpt-4o-mini")
             if bool(ctx_grade.get("pass", False)):
                 ctx_passed += 1
 
@@ -124,15 +165,13 @@ def main():
                 }
             )
 
-            # ---------- Products eval: identical outer schema ----------
-            # products_meta is what render_results.py will preview in the modal
+            # ---------- Products eval ----------
             products_meta = meta.get("products", []) or []
             intent = meta.get("intent", "") or "unknown"
 
             surf = deterministic_grade_surfacing(intent, output_text, products_meta)
             corr = grade_products_correctness(products_meta, expected)
 
-            # Combine into one grade object (so render_results shows pass/reason cleanly)
             overall_pass = bool(surf.get("pass", False)) and (
                 bool(corr.get("pass", False)) if expected else True
             )
@@ -168,7 +207,6 @@ def main():
         ctx_pct = int(ctx_pass_rate * 100)
         prod_pct = int(prod_pass_rate * 100)
 
-        # Write files in the SAME naming style, but include model so they don't overwrite
         safe_model = model.replace(".", "_")
         ctx_base = f"result_{safe_model}_{ctx_pct}_{date_str}_{time_str}"
         prod_base = f"result_products_{safe_model}_{prod_pct}_{date_str}_{time_str}"
@@ -186,7 +224,11 @@ def main():
 
         print(f"[{model}] Context: {ctx_passed}/{total} = {ctx_pass_rate:.0%} → {ctx_path}")
         print(f"[{model}] Products: {prod_passed}/{total} = {prod_pass_rate:.0%} → {prod_path}")
-
+        print(f"[{model}] App tokens (excl judges): in={total_app_input_tokens}, out={total_app_output_tokens}")
+        print(
+            f"[{model}] App cost (excl judges): ${total_app_cost_usd:.6f} total, "
+            f"${(total_app_cost_usd / max(1, total)):.6f} per case"
+        )
 
 
 if __name__ == "__main__":
