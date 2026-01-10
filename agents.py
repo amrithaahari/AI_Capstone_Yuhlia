@@ -7,7 +7,7 @@ from typing import List, Optional, Dict, Any
 from config import Intent, LLM_ENABLED
 from models import ClassificationResult, GuardrailResult, Product
 
-DEFAULT_GEN_MODEL = "gpt-4o-mini"
+DEFAULT_GEN_MODEL = "gpt-4.1"
 
 NO_TEMPERATURE_MODELS = {
     "gpt-5.2",
