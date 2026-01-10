@@ -24,12 +24,24 @@ def init_session_state() -> None:
 
 
 
-def render_products_table(products: list[Product]) -> None:
+def render_products_table(products: list[Product], table_key: str, default_limit: int = 10) -> None:
     if not products:
         return
 
+    expanded_key = f"{table_key}_expanded"
+    if expanded_key not in st.session_state:
+        st.session_state[expanded_key] = False
+
+    expanded = bool(st.session_state[expanded_key])
+
+    total = len(products)
+    limit = default_limit
+    shown_products = products if expanded else products[:limit]
+
+    # Toggle control (only if needed)
+
     rows_html = []
-    for p in products:
+    for p in shown_products:
         name = (getattr(p, "name", "") or "").strip()
         p_type = (getattr(p, "type", "") or "").strip()
 
@@ -90,10 +102,15 @@ def render_products_table(products: list[Product]) -> None:
     </div>
     """
 
-    # Height: header (~46) + row height (~44) * n + small padding
-    height = 60 + (len(products) * 44)
+    # Height: header (~46) + row height (~44) * shown + padding
+    height = 60 + (len(shown_products) * 44)
     components.html(html, height=height, scrolling=False)
 
+    if total > limit:
+        label = "Show less" if expanded else f"Show more ({total - limit} more)"
+        if st.button(label, key=f"{table_key}_toggle", use_container_width=True):
+            st.session_state[expanded_key] = not expanded
+            st.rerun()
 
 
 def _escape_html(s: str) -> str:
@@ -106,7 +123,11 @@ def _escape_html(s: str) -> str:
     )
 
 
-def render_assistant_message_with_table(message: str, products: Optional[list[Product]]) -> None:
+def render_assistant_message_with_table(
+    message: str,
+    products: Optional[list[Product]],
+    table_key: str,
+) -> None:
     TABLE_TOKEN_RE = re.compile(r"\[\[\s*PRODUCT_TABLE\s*\]\]|\[\s*PRODUCT_TABLE\s*\]", re.IGNORECASE)
     msg = (message or "").strip()
 
@@ -117,10 +138,11 @@ def render_assistant_message_with_table(message: str, products: Optional[list[Pr
         cleaned = TABLE_TOKEN_RE.sub("", msg or "").strip()
         if cleaned:
             st.markdown(cleaned)
-        render_products_table(products)
+        render_products_table(products, table_key=table_key)
         return
 
     if msg:
         st.markdown(msg)
     if products:
-        render_products_table(products)
+        render_products_table(products, table_key=table_key)
+

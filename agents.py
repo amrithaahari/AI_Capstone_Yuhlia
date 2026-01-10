@@ -278,7 +278,9 @@ Interpretation rules:
   set esg_scores_in=["AAA","AA","A"] and order_by_esg=true.
 - "sustainable shares/stocks": also include "Share" in type_contains_all
 - "sustainable ETFs": also include "ETF" in type_contains_all
-- "low-cost/cheap/low fee/low TER": set max_ter=0.003 unless user specified a cap.
+- "low_cost_etf" when it sees “low cost / low fee / cheap / commission-free ETFs”
+- "low-cost/cheap/low fee/low TER": set max_ter=0.004 unless user specified a cap AND set notes="low_cost_etf".
+- Only set max_ter if the user mentions TER/fees/low fee/percent; otherwise set it to null.
 - "world/global/worldwide": set region="World"
 - "special savings"/"commission-free": include both "ETF" and "Special savings" in type_contains_all.
 - Exclusions like "avoid defense/military/weapons": schema cannot guarantee exclusions.
@@ -301,11 +303,14 @@ def extract_filters(goal: str) -> Dict[str, Any]:
         '  "region": string or null,\n'
         '  "max_ter": number or null,\n'
         '  "esg_scores_in": [string]\n'
+        '  "order_by_esg": boolean\n'
+        '  "notes": string,\n'
         '}\n'
         "Rules:\n"
         "- If unknown, use null or []\n"
-        "- Keep lists short\n"
-    )
+        "- If NOT an overview query, set notes to an empty string\n"
+        "- Use notes=\"overview_query\" ONLY for broad availability / catalogue questions\n"
+)
 
     prompt = f"USER_MESSAGE:\n{goal}\n\n{schema}"
 
@@ -318,8 +323,22 @@ def extract_filters(goal: str) -> Dict[str, Any]:
     )
     raw = _strip_code_fences(raw)
 
+    print("\n[DEBUG extract_filters] goal:\n", goal)
+    print("\n[DEBUG extract_filters] raw:\n", raw)
+
+
     try:
         data = json.loads(raw)
+
+        notes = (data.get("notes") or "").strip().lower()
+        is_overview = notes == "overview_query"
+
+        print("\n[DEBUG extract_filters] notes:", repr(notes))
+        print("[DEBUG extract_filters] is_overview_query:", is_overview)
+
+        print("\n[DEBUG extract_filters] parsed:\n", json.dumps(data, indent=2))
+        print("\n[DEBUG extract_filters] notes:\n", data.get("notes"))
+
         return data if isinstance(data, dict) else {}
     except Exception:
         # One repair attempt; still same model.

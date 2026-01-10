@@ -186,8 +186,8 @@ def main():
 
     with chip_col2:
         st.markdown('<div class="yuh-chip">', unsafe_allow_html=True)
-        if st.button("Show low-fee global ETFs", use_container_width=True):
-            st.session_state.user_input = "Show me low-fee global ETFs."
+        if st.button("Show low-fee global ETFs at Yuh", use_container_width=True):
+            st.session_state.user_input = "Show me low-fee global ETFs at Yuh."
             st.rerun()
         st.markdown("</div>", unsafe_allow_html=True)
 
@@ -197,13 +197,13 @@ def main():
         st.session_state.show_debug = st.toggle("Debug", value=st.session_state.show_debug)
 
     # --- Chat history ---
-    for msg in st.session_state.messages:
+    for i, msg in enumerate(st.session_state.messages):
         with st.chat_message(msg["role"]):
             content = msg.get("content", "")
             products = msg.get("products") or []
 
             if msg["role"] == "assistant":
-                render_assistant_message_with_table(content, products)
+                render_assistant_message_with_table(content, products, table_key=f"hist_{i}")
             else:
                 st.write(content)
 
@@ -225,7 +225,7 @@ def main():
 
         with st.chat_message("assistant"):
             result = process_user_message(user_input, st.session_state.conversation_state)
-            render_assistant_message_with_table(result.message, result.products or [])
+            render_assistant_message_with_table(result.message, result.products or [], table_key="live")
 
             debug_payload = {
                 "intent": result.intent,

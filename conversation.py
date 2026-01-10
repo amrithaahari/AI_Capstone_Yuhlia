@@ -113,6 +113,32 @@ def _validate_filters_llm(raw: Dict[str, Any]) -> dict:
         "notes": notes,
     }
 
+def _is_low_cost_etf_query(text: str, filters: Dict[str, Any]) -> bool:
+    t = (text or "").lower()
+    mentions_etf = "etf" in t or any("etf" in (x or "").lower() for x in (filters.get("type_contains_all") or []))
+    low_cost_terms = ["low cost", "low-cost", "low fee", "low-fee", "cheap", "commission", "fee"]
+    low_cost_signal = any(k in t for k in low_cost_terms) or (filters.get("max_ter") is not None)
+    return bool(mentions_etf and low_cost_signal)
+
+
+def _merge_dedup_keep_order(a: List[Product], b: List[Product], limit: int) -> List[Product]:
+    out: List[Product] = []
+    seen = set()
+    for p in (a or []):
+        if p.id not in seen:
+            seen.add(p.id)
+            out.append(p)
+        if len(out) >= limit:
+            return out
+    for p in (b or []):
+        if p.id not in seen:
+            seen.add(p.id)
+            out.append(p)
+        if len(out) >= limit:
+            return out
+    return out
+
+
 def enforce_table_token_contract(output_text: str, intent: str, products: List[Product]) -> str:
     """
     Deterministic contract:
@@ -130,6 +156,8 @@ def enforce_table_token_contract(output_text: str, intent: str, products: List[P
         text = text.rstrip() + "\n\n[[PRODUCT_TABLE]]"
 
     return text
+
+
 
 def process_user_message(message: str, state: ConversationState) -> ProcessingResult:
     msg = (message or "").strip()
@@ -208,14 +236,38 @@ def process_user_message(message: str, state: ConversationState) -> ProcessingRe
             )
 
             if has_structured:
-                products = search_products_filtered(
-                    type_contains_all=filters.get("type_contains_all") or None,
-                    region=filters.get("region"),
-                    max_ter=filters.get("max_ter"),
-                    esg_scores_in=filters.get("esg_scores_in") or None,
-                    top_k=TOP_K_PRODUCTS,
-                    order_by_esg=bool(filters.get("order_by_esg")),
-                )
+                if _is_low_cost_etf_query(effective_query, filters):
+                    # 1) Commission-free first: Type contains "Special savings (ETF)"
+                    commission_free = search_products_filtered(
+                        type_contains_all=["Special savings (ETF)"],
+                        region=filters.get("region"),
+                        max_ter=None,  # important: don't TER-filter this set
+                        esg_scores_in=filters.get("esg_scores_in") or None,
+                        top_k=TOP_K_PRODUCTS,
+                        order_by_esg=bool(filters.get("order_by_esg")),
+                    )
+
+                    # 2) Then low TER ETFs: TER < 0.4%
+                    low_ter = search_products_filtered(
+                        type_contains_all=["ETF"],
+                        region=filters.get("region"),
+                        max_ter=0.004,  # force 0.4% cap for this intent
+                        esg_scores_in=filters.get("esg_scores_in") or None,
+                        top_k=TOP_K_PRODUCTS,
+                        order_by_esg=bool(filters.get("order_by_esg")),
+                    )
+
+                    products = _merge_dedup_keep_order(commission_free, low_ter, limit=TOP_K_PRODUCTS)
+                else:
+                    products = search_products_filtered(
+                        type_contains_all=filters.get("type_contains_all") or None,
+                        region=filters.get("region"),
+                        max_ter=filters.get("max_ter"),
+                        esg_scores_in=filters.get("esg_scores_in") or None,
+                        top_k=TOP_K_PRODUCTS,
+                        order_by_esg=bool(filters.get("order_by_esg")),
+                    )
+
             else:
                 # RAG fallback for fuzzy / values-based queries
                 candidate_ids = rag_candidates(effective_query, top_n=80)
