@@ -35,7 +35,7 @@ The project focuses on intent classification, structured product retrieval, guar
 ```
 Streamlit UI
    ↓
-conversation.py (orchestrator)
+conversation.py (deterministic orchestrator - non LLM)
    ↓
 intent classification
    ↓
