@@ -1,7 +1,7 @@
 # Yuhlia Assistant
 
 Yuhlia is an agentic AI prototype for investment product discovery in the Yuh app.
-It helps users understand investing concepts and explore available products from a real SQLite catalog, without giving financial advice.
+It helps users understand investing concepts and explore available products from a real SQLite catalog, without giving financial advice. See [Yulia presentation](https://github.com/amrithaahari/AI_Capstone_Yuhlia/blob/main/yulia_product_presentation.pdf) for further background on the product
 
 The project focuses on intent classification, structured product retrieval, guardrails, and evaluation of LLM behaviour rather than UI polish or recommendations.
 
